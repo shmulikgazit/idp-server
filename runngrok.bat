@@ -1,0 +1,1 @@
+ngrok http http://localhost:3000 --host-header="localhost:3000" --domain=mature-mackerel-golden.ngrok-free.app
