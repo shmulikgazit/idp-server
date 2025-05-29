@@ -14,6 +14,52 @@ const PORT = process.env.PORT || 3000;
 // Encryption toggle state
 let encryptionEnabled = false;
 
+// OAuth flow type state
+let flowType = 'implicit'; // 'implicit', 'code', or 'codepkce'
+
+// In-memory store for authorization codes (in production, use Redis or database)
+const authorizationCodes = new Map();
+
+// PKCE helper functions
+function base64URLEncode(str) {
+    return str.toString('base64')
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=/g, '');
+}
+
+function sha256(buffer) {
+    return crypto.createHash('sha256').update(buffer).digest();
+}
+
+function verifyCodeChallenge(codeVerifier, codeChallenge, method) {
+    if (method === 'S256') {
+        const hash = sha256(codeVerifier);
+        const computedChallenge = base64URLEncode(hash);
+        return computedChallenge === codeChallenge;
+    } else if (method === 'plain') {
+        return codeVerifier === codeChallenge;
+    }
+    return false;
+}
+
+// Cleanup expired authorization codes every 5 minutes
+setInterval(() => {
+    const now = Date.now();
+    let cleanedCount = 0;
+    
+    for (const [code, data] of authorizationCodes.entries()) {
+        if (now > data.expiresAt) {
+            authorizationCodes.delete(code);
+            cleanedCount++;
+        }
+    }
+    
+    if (cleanedCount > 0) {
+        console.log(`🧹 Cleaned up ${cleanedCount} expired authorization codes`);
+    }
+}, 5 * 60 * 1000); // 5 minutes
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -39,6 +85,8 @@ app.use((req, res, next) => {
         query: req.query,
         ip: req.ip,
         encryptionMode: encryptionEnabled ? 'SIGNING + ENCRYPTION (JWE)' : 'SIGNING ONLY (JWT)',
+        flowType: flowType.toUpperCase(),
+        issuer: `https://mature-mackerel-golden.ngrok-free.app/${flowType}`,
         response: null
     };
     
@@ -204,6 +252,16 @@ app.get('/', (req, res) => {
                 });
             }
             
+            function toggleFlowType(type) {
+                fetch('/toggle-flow-type', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ flowType: type })
+                }).then(() => {
+                    setTimeout(refreshLogs, 500);
+                });
+            }
+            
             setInterval(refreshLogs, 10000); // Auto-refresh every 10 seconds
         </script>
     </head>
@@ -227,6 +285,27 @@ app.get('/', (req, res) => {
                 'Encryption enabled but lpsso2026.pem not found in ./certs/') :
                 'Currently using JWT signing only (RS256) - easier for initial testing'
             }</p>
+            
+            <h3 style="margin-top: 25px;">🔄 OAuth Flow Type</h3>
+            <div style="margin: 15px 0;">
+                <label style="margin-right: 20px;">
+                    <input type="radio" name="flowType" value="implicit" ${flowType === 'implicit' ? 'checked' : ''} onchange="toggleFlowType('implicit')">
+                    <strong>Implicit Flow</strong> (response_type=id_token)
+                </label>
+                <label style="margin-right: 20px;">
+                    <input type="radio" name="flowType" value="code" ${flowType === 'code' ? 'checked' : ''} onchange="toggleFlowType('code')">
+                    <strong>Authorization Code Flow</strong> (response_type=code)
+                </label>
+                <label>
+                    <input type="radio" name="flowType" value="codepkce" ${flowType === 'codepkce' ? 'checked' : ''} onchange="toggleFlowType('codepkce')">
+                    <strong>Code Flow + PKCE</strong> (response_type=code + PKCE)
+                </label>
+            </div>
+            <div style="background: #e7f3ff; border: 1px solid #b3d9ff; padding: 10px; border-radius: 4px;">
+                <strong>Current Flow:</strong> <span style="color: #007bff; font-weight: bold;">${flowType.toUpperCase()}</span><br>
+                <strong>Issuer (iss):</strong> <code style="font-size: 11px;">https://mature-mackerel-golden.ngrok-free.app/${flowType}</code><br>
+                <strong>LivePerson Config:</strong> Use different issuer URLs to test multiple IdP configurations
+            </div>
         </div>
         
         <div class="status">
@@ -253,6 +332,7 @@ app.get('/', (req, res) => {
                 <div class="timestamp">${log.timestamp}</div>
                 <div><span class="method">${log.method}</span> <span class="url">${log.url}</span></div>
                 <div><strong>🔐 Mode:</strong> <span style="color: ${log.encryptionMode.includes('ENCRYPTION') ? '#28a745' : '#dc3545'};">${log.encryptionMode}</span></div>
+                <div><strong>🔄 Flow:</strong> <span style="color: #007bff;">${log.flowType}</span> | <strong>🏷️ Issuer:</strong> <code style="font-size: 11px;">${log.issuer}</code></div>
                 ${log.query && Object.keys(log.query).length > 0 ? `<div><strong>Query:</strong> <pre>${JSON.stringify(log.query, null, 2)}</pre></div>` : ''}
                 ${log.body && Object.keys(log.body).length > 0 ? `<div><strong>Body:</strong> <pre>${JSON.stringify(log.body, null, 2)}</pre></div>` : ''}
                 ${log.response ? `
@@ -287,25 +367,57 @@ app.get('/oauth-callback.html', (req, res) => {
     </head>
     <body>
         <script>
-            // Extract token from URL fragment (implicit flow)
+            // Extract parameters from URL
+            const urlParams = new URLSearchParams(window.location.search);
             const hash = window.location.hash.substring(1);
-            const params = new URLSearchParams(hash);
+            const hashParams = new URLSearchParams(hash);
             
-            const id_token = params.get('id_token');
-            const error = params.get('error');
-            const error_description = params.get('error_description');
+            // Check for authorization code (ssoKey parameter for LivePerson)
+            const ssoKey = urlParams.get('ssoKey');
+            const code = urlParams.get('code');
+            const state = urlParams.get('state');
+            
+            // Check for implicit flow tokens (from hash)
+            const id_token = hashParams.get('id_token');
+            const error = hashParams.get('error') || urlParams.get('error');
+            const error_description = hashParams.get('error_description') || urlParams.get('error_description');
+            
+            console.log('OAuth callback received:', {
+                ssoKey: ssoKey,
+                code: code,
+                id_token: id_token ? 'present' : 'none',
+                error: error,
+                state: state
+            });
             
             // Send result back to parent window
             if (window.parent && window.parent !== window) {
                 window.parent.postMessage({
                     type: 'oauth_callback',
+                    ssoKey: ssoKey,
+                    code: code,
                     id_token: id_token,
                     error: error,
-                    error_description: error_description
+                    error_description: error_description,
+                    state: state
                 }, window.location.origin);
             }
         </script>
         <p>Processing OAuth callback...</p>
+        <p id="status"></p>
+        <script>
+            // Show status
+            const statusEl = document.getElementById('status');
+            if (ssoKey) {
+                statusEl.textContent = 'Authorization code (ssoKey) received: ' + ssoKey.substring(0, 8) + '...';
+            } else if (id_token) {
+                statusEl.textContent = 'ID token received (implicit flow)';
+            } else if (error) {
+                statusEl.textContent = 'Error: ' + error;
+            } else {
+                statusEl.textContent = 'No valid parameters found';
+            }
+        </script>
     </body>
     </html>
     `;
@@ -328,14 +440,34 @@ app.get('/test', (req, res) => {
 
             lpTag.identities.push(identityFn);
             function identityFn(callback) {
-                callback({
-                    iss: "https://mature-mackerel-golden.ngrok-free.app",  // Must match JWT issuer
-                    acr: "loa1",
-                    sub: "test-user-123"  // Must match JWT subject
-                });
+                // Get current flow type to determine the correct issuer
+                fetch('/health')
+                    .then(response => response.json())
+                    .then(healthData => {
+                        const currentFlowType = healthData.flowType || 'implicit';
+                        const issuer = \`https://mature-mackerel-golden.ngrok-free.app/\${currentFlowType}\`;
+                        
+                        console.log('LivePerson identity function - Current flow:', currentFlowType);
+                        console.log('LivePerson identity function - Using issuer:', issuer);
+                        
+                        callback({
+                            iss: issuer,  // Dynamic issuer based on current flow type
+                            acr: "loa1",
+                            sub: "test-user-123"  // Must match JWT subject
+                        });
+                    })
+                    .catch(error => {
+                        console.error('Error getting flow type for identity function:', error);
+                        // Fallback to default issuer
+                        callback({
+                            iss: "https://mature-mackerel-golden.ngrok-free.app/implicit",
+                            acr: "loa1",
+                            sub: "test-user-123"
+                        });
+                    });
             }
             
-            console.log('LivePerson authenticated identity function configured');
+            console.log('LivePerson authenticated identity function configured with dynamic issuer');
         </script>
         
         <!-- BEGIN LivePerson Monitor. -->
@@ -355,42 +487,122 @@ app.get('/test', (req, res) => {
             function lpgetToken(callback) {
                 console.log('LivePerson requesting authentication token...');
                 
-                // Use proper OAuth 2.0 /authorize endpoint with implicit flow
-                // The endpoint will detect this is an AJAX request and return JSON directly
-                const params = new URLSearchParams({
-                    response_type: 'id_token',
-                    client_id: 'liveperson-client',
-                    scope: 'openid profile email',
-                    state: 'liveperson-test',
-                    nonce: Math.random().toString(36).substring(7)
-                });
-                
-                fetch('/authorize?' + params.toString(), {
-                    method: 'GET',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    }
-                })
-                .then(response => response.json())
-                .then(data => {
-                    console.log('OAuth response from /authorize:', data);
-                    if (data.id_token) {
-                        console.log('✅ Calling LivePerson callback with ID token from /authorize');
-                        console.log('Token format:', data.id_token.split('.').length === 3 ? 'JWT (3 parts)' : data.id_token.split('.').length === 5 ? 'JWE (5 parts)' : 'Unknown');
-                        callback(data.id_token);
-                    } else if (data.error) {
-                        console.error('❌ OAuth error:', data.error, data.error_description);
+                // Get current flow type from server
+                fetch('/health')
+                    .then(response => response.json())
+                    .then(healthData => {
+                        const currentFlowType = healthData.flowType || 'implicit';
+                        console.log('Current flow type:', currentFlowType);
+                        
+                        if (currentFlowType === 'code') {
+                            // Authorization Code Flow
+                            console.log('Using Authorization Code Flow...');
+                            
+                            const params = new URLSearchParams({
+                                response_type: 'code',
+                                client_id: 'liveperson-client',
+                                scope: 'openid profile email',
+                                state: 'liveperson-test',
+                                nonce: Math.random().toString(36).substring(7)
+                            });
+                            
+                            // Get authorization code (ssoKey) - LivePerson will handle token exchange
+                            fetch('/authorize?' + params.toString(), {
+                                method: 'GET',
+                                headers: {
+                                    'Accept': 'application/json',
+                                    'Content-Type': 'application/json'
+                                }
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.ssoKey) {
+                                    console.log('✅ Authorization code (ssoKey) received:', data.ssoKey);
+                                    console.log('🔄 Passing ssoKey to LivePerson - LP IdP will call /token endpoint');
+                                    console.log('📋 LivePerson should treat this as authorization code, not id_token');
+                                    // Pass the ssoKey to LivePerson - they will handle the token exchange
+                                    callback(data.ssoKey);
+                                } else if (data.error) {
+                                    console.error('❌ OAuth error:', data.error, data.error_description);
+                                    callback(null);
+                                } else {
+                                    console.error('❌ No ssoKey in response');
+                                    callback(null);
+                                }
+                            })
+                            .catch(error => {
+                                console.error('❌ Error in Authorization Code Flow:', error);
+                                callback(null);
+                            });
+                            
+                        } else if (currentFlowType === 'codepkce') {
+                            // Authorization Code Flow with PKCE
+                            console.log('Using Authorization Code Flow with PKCE...');
+                            console.log('🔐 LivePerson will handle PKCE challenge/verifier generation automatically');
+                            
+                            // For PKCE flow, LivePerson handles the PKCE parameters automatically
+                            // We just need to be ready to receive the code_challenge parameters
+                            // and verify the code_verifier when LivePerson calls /token
+                            
+                            // Note: In a real PKCE implementation, the client would generate:
+                            // 1. code_verifier (cryptographically random string)
+                            // 2. code_challenge = base64url(sha256(code_verifier))
+                            // 3. Send code_challenge with /authorize request
+                            // 4. Send code_verifier with /token request
+                            
+                            // But LivePerson handles this automatically, so we just inform the user
+                            console.log('📋 PKCE flow requires LivePerson to generate challenge/verifier');
+                            console.log('📋 Our server will receive code_challenge in /authorize and code_verifier in /token');
+                            console.log('❌ Cannot test PKCE flow directly from browser - requires LivePerson integration');
+                            
+                            // For testing purposes, show that PKCE flow is selected but cannot be executed directly
+                            alert('PKCE flow selected. This flow requires LivePerson to handle PKCE parameters automatically. Use the LivePerson chat widget to test this flow.');
+                            callback(null);
+                            
+                        } else {
+                            // Implicit Flow (default)
+                            console.log('Using Implicit Flow...');
+                            
+                            const params = new URLSearchParams({
+                                response_type: 'id_token',
+                                client_id: 'liveperson-client',
+                                scope: 'openid profile email',
+                                state: 'liveperson-test',
+                                nonce: Math.random().toString(36).substring(7)
+                            });
+                            
+                            fetch('/authorize?' + params.toString(), {
+                                method: 'GET',
+                                headers: {
+                                    'Accept': 'application/json',
+                                    'Content-Type': 'application/json'
+                                }
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                                console.log('OAuth Implicit Flow response:', data);
+                                if (data.id_token) {
+                                    console.log('✅ Calling LivePerson callback with ID token from Implicit Flow');
+                                    console.log('Token format:', data.id_token.split('.').length === 3 ? 'JWT (3 parts)' : data.id_token.split('.').length === 5 ? 'JWE (5 parts)' : 'Unknown');
+                                    callback(data.id_token);
+                                } else if (data.error) {
+                                    console.error('❌ OAuth error:', data.error, data.error_description);
+                                    callback(null);
+                                } else {
+                                    console.error('❌ No ID token in response');
+                                    callback(null);
+                                }
+                            })
+                            .catch(error => {
+                                console.error('❌ Error in Implicit Flow:', error);
+                                callback(null);
+                            });
+                        }
+                    })
+                    .catch(error => {
+                        console.error('❌ Error getting flow type:', error);
                         callback(null);
-                    } else {
-                        console.error('❌ No ID token in response');
-                        callback(null);
-                    }
-                })
-                .catch(error => {
-                    console.error('❌ Error calling /authorize:', error);
-                    callback(null);
-                });
+                    });
             }
             
             // Test function to manually trigger token retrieval
@@ -425,19 +637,24 @@ app.get('/test', (req, res) => {
                 <p><strong>Site ID:</strong> a41244303</p>
                 <p><strong>Domain:</strong> lptag-a.liveperson.net</p>
                 <p><strong>Status:</strong> Chat widget should appear in the bottom right corner</p>
+                <div style="background: #fff3cd; border: 1px solid #ffeaa7; padding: 10px; margin-top: 10px; border-radius: 4px; font-size: 12px;">
+                    <strong>⚠️ Note:</strong> You may see console errors from <code>web-client-content-script.js</code> - these are from LivePerson's own code and can be safely ignored. They don't affect authentication functionality.
+                </div>
             </div>
             
             <div class="info-box" style="background: #e7f3ff; border: 1px solid #b3d9ff;">
                 <h3>🔐 Authenticated Identity Function Configured</h3>
                 <p>This page includes the authenticated identity function in <code>lpTag.identities</code> (placed BEFORE the lpTag script):</p>
                 <ul>
-                    <li><strong>Issuer (iss):</strong> <code>https://mature-mackerel-golden.ngrok-free.app</code></li>
+                    <li><strong>Issuer (iss):</strong> <code>Dynamic based on current flow type</code></li>
+                    <li><strong>Implicit Flow:</strong> <code>https://mature-mackerel-golden.ngrok-free.app/implicit</code></li>
+                    <li><strong>Code Flow:</strong> <code>https://mature-mackerel-golden.ngrok-free.app/code</code></li>
                     <li><strong>Subject (sub):</strong> <code>test-user-123</code></li>
                     <li><strong>ACR (Authentication Context Class Reference):</strong> <code>loa1</code></li>
                 </ul>
-                <p><strong>✅ These values match exactly with the JWT token claims</strong> that our IDP server generates.</p>
+                <p><strong>✅ Dynamic Issuer Matching:</strong> The identity function automatically detects the current flow type and uses the matching issuer URL.</p>
                 <p><strong>📋 Implementation:</strong> Uses the correct LivePerson identity function format that calls a callback with the identity object.</p>
-                <p>This tells LivePerson that this consumer should be authenticated using our IDP server.</p>
+                <p>This tells LivePerson which IdP configuration to use based on the current flow type.</p>
             </div>
             
             <div class="user-info">
@@ -488,6 +705,13 @@ app.get('/test', (req, res) => {
                         <li><strong>Step 2:</strong> <code>POST /token</code> with authorization code</li>
                     </ol>
                     
+                    <h4>📋 Authorization Code Flow + PKCE:</h4>
+                    <ol>
+                        <li><strong>Step 1:</strong> <code>GET /authorize?response_type=code&code_challenge=...&code_challenge_method=S256</code></li>
+                        <li><strong>Step 2:</strong> <code>POST /token</code> with authorization code + code_verifier</li>
+                        <li><strong>PKCE Verification:</strong> Server verifies SHA256(code_verifier) == code_challenge</li>
+                    </ol>
+                    
                     <h4>📋 Implicit Flow:</h4>
                     <ol>
                         <li><strong>Step 1:</strong> <code>GET /authorize?response_type=id_token&client_id=...&redirect_uri=...</code></li>
@@ -523,7 +747,11 @@ app.get('/test', (req, res) => {
                         <li><strong>Authorization URL:</strong> <code>https://your-domain.com/authorize</code></li>
                         <li><strong>Token URL:</strong> <code>https://your-domain.com/token</code></li>
                         <li><strong>JWKS URL:</strong> <code>https://your-domain.com/.well-known/jwks.json</code></li>
+                        <li><strong>Client ID:</strong> <code>clientid</code></li>
+                        <li><strong>Client Secret:</strong> <code>1234567890</code></li>
+                        <li><strong>Authentication:</strong> HTTP Basic Auth header</li>
                         <li><strong>Flow:</strong> Authorization Code Flow (recommended)</li>
+                        <li><strong>Callback Parameter:</strong> <code>ssoKey</code> (LivePerson format)</li>
                     </ul>
                 </div>
                 
@@ -534,13 +762,22 @@ app.get('/test', (req, res) => {
                         <li><strong>Token URL:</strong> <code>http://localhost:${PORT}/token</code></li>
                         <li><strong>Direct Token URL:</strong> <code>http://localhost:${PORT}/token-direct</code> (testing only)</li>
                         <li><strong>JWKS URL:</strong> <code>http://localhost:${PORT}/.well-known/jwks.json</code></li>
-                        <li><strong>JS Method:</strong> <code>lpgetToken</code> (uses /authorize with implicit flow)</li>
+                        <li><strong>Client ID:</strong> <code>clientid</code></li>
+                        <li><strong>Client Secret:</strong> <code>1234567890</code></li>
+                        <li><strong>Authentication:</strong> HTTP Basic Auth (Authorization: Basic base64(clientid:1234567890))</li>
+                        <li><strong>JS Method:</strong> <code>lpgetToken</code> (auto-detects current flow type)</li>
                         <li><strong>OAuth Callback:</strong> <code>http://localhost:${PORT}/oauth-callback.html</code></li>
+                        <li><strong>Current Flow:</strong> <span style="color: #007bff; font-weight: bold;">${flowType.toUpperCase()}</span></li>
+                        <li><strong>Current Issuer:</strong> <code style="font-size: 11px;">https://mature-mackerel-golden.ngrok-free.app/${flowType}</code></li>
                         <li><strong>Encryption Mode:</strong> ${encryptionEnabled ? 'JWE Encryption Enabled' : 'JWT Signing Only'}</li>
                     </ul>
                     <p style="margin-top: 10px; font-size: 12px; color: #666;">
-                        <strong>💡 LivePerson Integration:</strong> The <code>lpgetToken</code> function now uses the proper OAuth 2.0 <code>/authorize</code> endpoint. 
-                        The endpoint detects AJAX requests and returns tokens directly as JSON instead of redirecting.
+                        <strong>💡 LivePerson Integration:</strong> 
+                        <br>• <strong>Code Flow:</strong> Uses popup with <code>ssoKey</code> callback parameter (LivePerson standard)
+                        <br>• <strong>Code + PKCE Flow:</strong> LivePerson handles PKCE challenge/verifier automatically
+                        <br>• <strong>Implicit Flow:</strong> Direct AJAX call for testing
+                        <br>• <strong>Client Auth:</strong> LivePerson IdP will use clientid/1234567890 credentials
+                        <br>• <strong>Multiple IdPs:</strong> Different issuers allow testing multiple configurations
                     </p>
                 </div>
             </div>
@@ -567,6 +804,25 @@ app.post('/toggle-encryption', (req, res) => {
         encryptionEnabled: encryptionEnabled,
         lpCertificateAvailable: !!lpEncryptionPublicKey
     });
+});
+
+// Toggle flow type endpoint
+app.post('/toggle-flow-type', (req, res) => {
+    const { flowType: newFlowType } = req.body;
+    if (['implicit', 'code', 'codepkce'].includes(newFlowType)) {
+        flowType = newFlowType;
+        console.log(`OAuth Flow Type changed to: ${flowType.toUpperCase()}`);
+        res.json({ 
+            success: true, 
+            flowType: flowType,
+            issuer: `https://mature-mackerel-golden.ngrok-free.app/${flowType}`
+        });
+    } else {
+        res.status(400).json({ 
+            error: 'invalid_flow_type', 
+            error_description: 'Supported flow types: implicit, code, codepkce' 
+        });
+    }
 });
 
 // JWKS endpoint for public key distribution
@@ -615,10 +871,17 @@ app.get('/encryption-public-key', (req, res) => {
 });
 
 // Create JWT token (with optional JWE encryption)
-async function createToken(payload) {
+async function createToken(payload, issuer) {
     try {
         console.log(`\n🔐 TOKEN CREATION MODE: ${encryptionEnabled ? 'SIGNING + ENCRYPTION (JWE)' : 'SIGNING ONLY (JWT)'}`);
         console.log(`📜 LivePerson cert available: ${!!lpEncryptionPublicKey}`);
+        console.log(`🏷️  Issuer: ${issuer}`);
+        
+        // Add issuer to payload
+        const tokenPayload = {
+            ...payload,
+            iss: issuer
+        };
         
         // Convert PKCS#1 to PKCS#8 format using Node.js crypto
         const keyObject = crypto.createPrivateKey(signingPrivateKey);
@@ -628,7 +891,7 @@ async function createToken(payload) {
         const privateKey = await jose.importPKCS8(pkcs8Key, 'RS256');
         
         // Create the signed JWT using modern jose library
-        const signedToken = await new jose.SignJWT(payload)
+        const signedToken = await new jose.SignJWT(tokenPayload)
             .setProtectedHeader({ alg: 'RS256', kid: 'signing-key-1' })
             .setIssuedAt()
             .setExpirationTime('1h')
@@ -691,7 +954,9 @@ app.get('/authorize', async (req, res) => {
         response_type, 
         scope, 
         state, 
-        nonce 
+        nonce,
+        code_challenge,
+        code_challenge_method
     } = req.query;
     
     console.log('Authorization request received:', req.query);
@@ -701,6 +966,32 @@ app.get('/authorize', async (req, res) => {
     const isAjaxRequest = req.headers['x-requested-with'] === 'XMLHttpRequest' || 
                          req.headers['accept']?.includes('application/json') ||
                          req.query.format === 'json';
+    
+    // PKCE validation for codepkce flow
+    const isPKCEFlow = flowType === 'codepkce' || (code_challenge && code_challenge_method);
+    if (isPKCEFlow) {
+        if (!code_challenge || !code_challenge_method) {
+            const error = {
+                error: 'invalid_request',
+                error_description: 'PKCE flow requires code_challenge and code_challenge_method parameters'
+            };
+            console.log('❌ PKCE parameters missing:', error);
+            return res.status(400).json(error);
+        }
+        
+        if (code_challenge_method !== 'S256' && code_challenge_method !== 'plain') {
+            const error = {
+                error: 'invalid_request',
+                error_description: 'Unsupported code_challenge_method. Supported: S256, plain'
+            };
+            console.log('❌ Invalid PKCE method:', error);
+            return res.status(400).json(error);
+        }
+        
+        console.log('✅ PKCE parameters validated:');
+        console.log('   code_challenge:', code_challenge);
+        console.log('   code_challenge_method:', code_challenge_method);
+    }
     
     if (!response_type || !['code', 'id_token', 'token'].includes(response_type)) {
         const error = { 
@@ -718,8 +1009,10 @@ app.get('/authorize', async (req, res) => {
     try {
         // Create user payload
         const now = Math.floor(Date.now() / 1000);
+        const issuer = `https://mature-mackerel-golden.ngrok-free.app/${flowType}`;
+        
         const payload = {
-            iss: `https://mature-mackerel-golden.ngrok-free.app`,
+            // iss will be added by createToken function
             sub: 'test-user-123',
             aud: client_id || 'liveperson-client',
             exp: now + 3600,
@@ -749,31 +1042,64 @@ app.get('/authorize', async (req, res) => {
             }
         };
         
+        console.log(`🔄 Using ${flowType.toUpperCase()} flow with issuer: ${issuer}`);
+        console.log(`📤 Expected LivePerson behavior:`);
+        console.log(`   - Implicit Flow: LP treats response as id_token directly`);
+        console.log(`   - Code Flow: LP should call /token endpoint with ssoKey`);
+        
         if (response_type === 'code') {
             // Authorization Code Flow
             const code = uuidv4();
-            const encodedPayload = Buffer.from(JSON.stringify(payload)).toString('base64');
+            
+            // Store the payload with the code (expires in 10 minutes)
+            const codeData = {
+                payload: { ...payload, iss: issuer },
+                expiresAt: Date.now() + (10 * 60 * 1000), // 10 minutes
+                clientId: client_id || 'liveperson-client'
+            };
+            
+            // Add PKCE parameters if present
+            if (isPKCEFlow) {
+                codeData.codeChallenge = code_challenge;
+                codeData.codeChallengeMethod = code_challenge_method;
+                console.log('🔐 PKCE parameters stored with authorization code');
+            }
+            
+            authorizationCodes.set(code, codeData);
+            
+            console.log(`📝 === AUTHORIZATION CODE CREATED ===`);
+            console.log(`🔑 Code: ${code}`);
+            console.log(`⏰ Expires at: ${new Date(Date.now() + (10 * 60 * 1000)).toISOString()}`);
+            console.log(`👤 User: ${payload.sub}`);
+            console.log(`🏷️  Issuer: ${issuer}`);
+            console.log(`🔐 PKCE: ${isPKCEFlow ? 'YES' : 'NO'}`);
+            if (isPKCEFlow) {
+                console.log(`   Challenge: ${code_challenge}`);
+                console.log(`   Method: ${code_challenge_method}`);
+            }
+            console.log(`📊 Total stored codes: ${authorizationCodes.size}`);
+            console.log(`🎯 LivePerson should call /token with this code`);
+            console.log(`=======================================`);
             
             if (isAjaxRequest) {
                 // Return code directly for AJAX requests
                 console.log('Authorization Code Flow - Returning code directly (AJAX)');
                 res.json({
-                    code: `${code}.${encodedPayload}`,
-                    state: state
+                    ssoKey: code
                 });
             } else {
-                // Traditional redirect for browser requests
+                // LivePerson expects callback with ssoKey parameter
                 const redirectUrl = new URL(redirect_uri);
-                redirectUrl.searchParams.set('code', `${code}.${encodedPayload}`);
+                redirectUrl.searchParams.set('ssoKey', code); // LivePerson uses ssoKey instead of code
                 if (state) redirectUrl.searchParams.set('state', state);
                 
-                console.log('Authorization Code Flow - Redirecting with code');
+                console.log(`Authorization Code Flow - Redirecting to: ${redirectUrl.toString()}`);
                 res.redirect(redirectUrl.toString());
             }
             
         } else if (response_type === 'id_token') {
             // Implicit Flow
-            const idToken = await createToken(payload);
+            const idToken = await createToken(payload, issuer);
             
             if (isAjaxRequest) {
                 // Return token directly for AJAX requests (perfect for lpgetToken!)
@@ -811,12 +1137,19 @@ app.get('/authorize', async (req, res) => {
 
 // OAuth Token endpoint (for authorization code flow)
 app.post('/token', async (req, res) => {
-    const { grant_type, code, client_id, client_secret, redirect_uri } = req.body;
+    const { grant_type, code, client_id, client_secret, redirect_uri, code_verifier } = req.body;
     
-    console.log('Token exchange request received:', req.body);
-    console.log(`Encryption mode: ${encryptionEnabled ? 'ENABLED' : 'DISABLED'}`);
+    console.log('\n🔥 === TOKEN ENDPOINT CALLED ===');
+    console.log('📅 Timestamp:', new Date().toISOString());
+    console.log('🌐 Request Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('📝 Request Body:', JSON.stringify(req.body, null, 2));
+    console.log('🔐 Encryption mode:', encryptionEnabled ? 'ENABLED' : 'DISABLED');
+    console.log('🔄 Current flow type:', flowType);
+    console.log('🏷️  Current issuer:', `https://mature-mackerel-golden.ngrok-free.app/${flowType}`);
+    console.log('🔐 PKCE code_verifier:', code_verifier ? 'PRESENT' : 'NOT PRESENT');
     
     if (grant_type !== 'authorization_code') {
+        console.log('❌ Invalid grant type:', grant_type);
         return res.status(400).json({
             error: 'unsupported_grant_type',
             error_description: 'Only authorization_code grant type is supported'
@@ -824,35 +1157,130 @@ app.post('/token', async (req, res) => {
     }
     
     if (!code) {
+        console.log('❌ Missing authorization code');
         return res.status(400).json({
             error: 'invalid_request',
             error_description: 'Missing required parameter: code'
         });
     }
     
+    // Validate client credentials (LivePerson IdP will use these)
+    console.log('🔑 Validating client credentials...');
+    
+    let receivedClientId, receivedClientSecret;
+    
+    // Check for Basic Authentication header
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Basic ')) {
+        const base64Credentials = authHeader.split(' ')[1];
+        const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+        const [headerClientId, headerClientSecret] = credentials.split(':');
+        
+        console.log('📋 Using Basic Authentication from header');
+        console.log('   Authorization header:', authHeader);
+        console.log('   Decoded credentials:', `${headerClientId}:${headerClientSecret ? '[PRESENT]' : '[MISSING]'}`);
+        
+        receivedClientId = headerClientId;
+        receivedClientSecret = headerClientSecret;
+    } else {
+        // Fallback to body parameters (for testing)
+        console.log('📋 Using credentials from request body (fallback)');
+        receivedClientId = client_id;
+        receivedClientSecret = client_secret;
+    }
+    
+    console.log('   Expected client_id: clientid');
+    console.log('   Received client_id:', receivedClientId);
+    console.log('   Expected client_secret: 1234567890');
+    console.log('   Received client_secret:', receivedClientSecret ? '[PRESENT]' : '[MISSING]');
+    
+    if (receivedClientId !== 'clientid' || receivedClientSecret !== '1234567890') {
+        console.log(`❌ Invalid client credentials: ${receivedClientId}/${receivedClientSecret}`);
+        return res.status(401).json({
+            error: 'invalid_client',
+            error_description: 'Invalid client credentials'
+        });
+    }
+    
+    console.log('✅ Client credentials validated');
+    
     try {
-        // Decode the authorization code to get the payload
-        // In production, you'd validate the code from storage
-        const [codeId, encodedPayload] = code.split('.');
-        if (!encodedPayload) {
+        // Retrieve and validate authorization code
+        console.log('🔍 Looking up authorization code:', code);
+        console.log('📊 Current stored codes:', authorizationCodes.size);
+        
+        const codeData = authorizationCodes.get(code);
+        
+        if (!codeData) {
+            console.log(`❌ Authorization code not found: ${code}`);
+            console.log('📋 Available codes:', Array.from(authorizationCodes.keys()));
             return res.status(400).json({
                 error: 'invalid_grant',
-                error_description: 'Invalid authorization code'
+                error_description: 'Invalid or expired authorization code'
             });
         }
         
-        const payload = JSON.parse(Buffer.from(encodedPayload, 'base64').toString());
-        console.log(`Exchanging code for tokens for user: ${payload.sub}`);
+        // Check if code has expired
+        if (Date.now() > codeData.expiresAt) {
+            console.log(`❌ Authorization code expired: ${code}`);
+            console.log(`   Expired at: ${new Date(codeData.expiresAt).toISOString()}`);
+            console.log(`   Current time: ${new Date().toISOString()}`);
+            authorizationCodes.delete(code); // Clean up expired code
+            return res.status(400).json({
+                error: 'invalid_grant',
+                error_description: 'Authorization code has expired'
+            });
+        }
+        
+        // Clean up the code (one-time use)
+        authorizationCodes.delete(code);
+        console.log(`✅ Authorization code validated and consumed: ${code}`);
+        
+        // PKCE verification if required
+        if (codeData.codeChallenge && codeData.codeChallengeMethod) {
+            console.log('🔐 === PKCE VERIFICATION ===');
+            console.log('   Stored challenge:', codeData.codeChallenge);
+            console.log('   Stored method:', codeData.codeChallengeMethod);
+            console.log('   Received verifier:', code_verifier ? 'PRESENT' : 'MISSING');
+            
+            if (!code_verifier) {
+                console.log('❌ PKCE verification failed: code_verifier missing');
+                return res.status(400).json({
+                    error: 'invalid_grant',
+                    error_description: 'PKCE verification failed: code_verifier required'
+                });
+            }
+            
+            const isValidPKCE = verifyCodeChallenge(code_verifier, codeData.codeChallenge, codeData.codeChallengeMethod);
+            
+            if (!isValidPKCE) {
+                console.log('❌ PKCE verification failed: code_verifier does not match code_challenge');
+                console.log('   Expected challenge (from verifier):', base64URLEncode(sha256(code_verifier)));
+                console.log('   Stored challenge:', codeData.codeChallenge);
+                return res.status(400).json({
+                    error: 'invalid_grant',
+                    error_description: 'PKCE verification failed: invalid code_verifier'
+                });
+            }
+            
+            console.log('✅ PKCE verification successful');
+        } else if (code_verifier) {
+            console.log('⚠️  code_verifier provided but no PKCE challenge stored (non-PKCE flow)');
+        }
+        
+        const payload = codeData.payload;
+        console.log(`👤 Creating tokens for user: ${payload.sub}`);
+        console.log(`🏷️  Using issuer from code: ${payload.iss}`);
         
         // Create tokens
-        const idToken = await createToken(payload);
+        const idToken = await createToken(payload, payload.iss);
         
         // Create access token
         const keyObject = crypto.createPrivateKey(signingPrivateKey);
         const pkcs8Key = keyObject.export({ type: 'pkcs8', format: 'pem' });
         const privateKey = await jose.importPKCS8(pkcs8Key, 'RS256');
         const accessToken = await new jose.SignJWT({
-            iss: `https://mature-mackerel-golden.ngrok-free.app`,
+            iss: payload.iss,
             sub: payload.sub,
             aud: payload.aud,
             scope: 'openid profile email'
@@ -870,16 +1298,19 @@ app.post('/token', async (req, res) => {
             scope: 'openid profile email'
         };
         
-        console.log(`\n📤 TOKEN RESPONSE for user: ${payload.sub}`);
-        console.log(`🔑 Access Token (${accessToken.length} chars): ${accessToken.substring(0, 50)}...`);
-        console.log(`🆔 ID Token (${idToken.length} chars): ${idToken.substring(0, 50)}...`);
+        console.log(`\n🎉 === TOKEN RESPONSE SUCCESS ===`);
+        console.log(`👤 User: ${payload.sub}`);
+        console.log(`🔑 Access Token: ${accessToken.length} chars`);
+        console.log(`🆔 ID Token: ${idToken.length} chars`);
         console.log(`📊 Token Type: ${response.token_type}, Expires: ${response.expires_in}s`);
         console.log(`🎯 ID Token Format: ${idToken.split('.').length === 3 ? 'JWT (3 parts)' : idToken.split('.').length === 5 ? 'JWE (5 parts)' : 'Unknown format'}`);
+        console.log(`📤 Sending response to LivePerson IdP`);
         
         res.json(response);
         
     } catch (error) {
-        console.error('Error exchanging code for tokens:', error);
+        console.error('💥 Error exchanging code for tokens:', error);
+        console.error('Stack trace:', error.stack);
         res.status(500).json({
             error: 'server_error',
             error_description: 'Failed to exchange code for tokens'
@@ -903,8 +1334,10 @@ app.post('/token-direct', async (req, res) => {
     
     try {
         const now = Math.floor(Date.now() / 1000);
+        const issuer = `https://mature-mackerel-golden.ngrok-free.app/${flowType}`;
+        
         const payload = {
-            iss: `https://mature-mackerel-golden.ngrok-free.app`,
+            // iss will be added by createToken function
             sub: userId,
             aud: clientId,
             exp: now + 3600,
@@ -933,15 +1366,17 @@ app.post('/token-direct', async (req, res) => {
             }
         };
         
+        console.log(`🔄 Using ${flowType.toUpperCase()} flow with issuer: ${issuer}`);
+        
         // Create signed JWT or JWE based on encryption setting
-        const idToken = await createToken(payload);
+        const idToken = await createToken(payload, issuer);
         
         // Create access token (simple JWT for testing)
         const keyObject = crypto.createPrivateKey(signingPrivateKey);
         const pkcs8Key = keyObject.export({ type: 'pkcs8', format: 'pem' });
         const privateKey = await jose.importPKCS8(pkcs8Key, 'RS256');
         const accessToken = await new jose.SignJWT({
-            iss: `https://mature-mackerel-golden.ngrok-free.app`,
+            iss: issuer,
             sub: userId,
             aud: clientId,
             scope: 'openid profile email'
@@ -976,6 +1411,78 @@ app.post('/token-direct', async (req, res) => {
     }
 });
 
+// Test PKCE endpoint (for debugging)
+app.post('/test-pkce', (req, res) => {
+    const { code_verifier, code_challenge, code_challenge_method } = req.body;
+    
+    console.log('\n🧪 === PKCE TEST ===');
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    
+    if (!code_verifier) {
+        return res.status(400).json({
+            error: 'Missing code_verifier'
+        });
+    }
+    
+    // Generate challenge from verifier
+    const hash = sha256(code_verifier);
+    const computedChallenge = base64URLEncode(hash);
+    
+    console.log('PKCE Test Results:');
+    console.log('   code_verifier:', code_verifier);
+    console.log('   computed_challenge:', computedChallenge);
+    console.log('   provided_challenge:', code_challenge);
+    console.log('   method:', code_challenge_method);
+    
+    const isValid = code_challenge ? verifyCodeChallenge(code_verifier, code_challenge, code_challenge_method || 'S256') : true;
+    
+    res.json({
+        success: true,
+        code_verifier: code_verifier,
+        computed_challenge: computedChallenge,
+        provided_challenge: code_challenge,
+        method: code_challenge_method || 'S256',
+        verification_result: isValid,
+        message: isValid ? 'PKCE verification successful' : 'PKCE verification failed'
+    });
+});
+
+// Test Basic Auth endpoint (for debugging)
+app.post('/test-basic-auth', (req, res) => {
+    console.log('\n🧪 === BASIC AUTH TEST ===');
+    console.log('Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Basic ')) {
+        const base64Credentials = authHeader.split(' ')[1];
+        const credentials = Buffer.from(base64Credentials, 'base64').toString('ascii');
+        const [clientId, clientSecret] = credentials.split(':');
+        
+        console.log('✅ Basic Auth decoded successfully:');
+        console.log('   Base64:', base64Credentials);
+        console.log('   Decoded:', credentials);
+        console.log('   Client ID:', clientId);
+        console.log('   Client Secret:', clientSecret);
+        
+        res.json({
+            success: true,
+            authHeader: authHeader,
+            base64: base64Credentials,
+            decoded: credentials,
+            clientId: clientId,
+            clientSecret: clientSecret,
+            valid: clientId === 'clientid' && clientSecret === '1234567890'
+        });
+    } else {
+        console.log('❌ No Basic Auth header found');
+        res.status(400).json({
+            error: 'No Basic Auth header',
+            headers: req.headers
+        });
+    }
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
     res.json({ 
@@ -983,7 +1490,9 @@ app.get('/health', (req, res) => {
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         encryptionEnabled: encryptionEnabled,
-        lpCertificateAvailable: !!lpEncryptionPublicKey
+        lpCertificateAvailable: !!lpEncryptionPublicKey,
+        flowType: flowType,
+        issuer: `https://mature-mackerel-golden.ngrok-free.app/${flowType}`
     });
 });
 
