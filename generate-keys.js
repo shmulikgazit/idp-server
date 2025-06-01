@@ -41,23 +41,11 @@ try {
     
     console.log('✓ Signing key pair generated successfully');
     
-    // Generate encryption key pair (RSA-OAEP)
-    console.log('\n2. Generating encryption key pair...');
-    
-    // Generate private key
-    execSync(`${opensslCmd} genrsa -out "${path.join(certsDir, 'encryption-private.pem')}" 2048`, { stdio: 'inherit' });
-    
-    // Extract public key
-    execSync(`${opensslCmd} rsa -in "${path.join(certsDir, 'encryption-private.pem')}" -pubout -out "${path.join(certsDir, 'encryption-public.pem')}"`, { stdio: 'inherit' });
-    
-    console.log('✓ Encryption key pair generated successfully');
-    
-    console.log('\n✅ All key pairs generated successfully!');
+    console.log('\n✅ Key pair generated successfully!');
     console.log('\nKey files created in ./certs/:');
     console.log('- signing-public.pem (for JWKS endpoint)');
     console.log('- signing-private.pem (for JWT signing)');
-    console.log('- encryption-public.pem (LivePerson will use this for JWE)');
-    console.log('- encryption-private.pem (for JWE decryption - keep secure)');
+    console.log('\nNote: For JWE encryption, place the LivePerson certificate (lpsso2026.pem) in ./certs/');
     
 } catch (error) {
     console.error('\n❌ Error generating keys:', error.message);
@@ -69,7 +57,5 @@ try {
     console.log('\nAlternatively, you can generate keys manually:');
     console.log('openssl genrsa -out certs/signing-private.pem 2048');
     console.log('openssl rsa -in certs/signing-private.pem -pubout -out certs/signing-public.pem');
-    console.log('openssl genrsa -out certs/encryption-private.pem 2048');
-    console.log('openssl rsa -in certs/encryption-private.pem -pubout -out certs/encryption-public.pem');
     process.exit(1);
 } 

@@ -13,6 +13,8 @@ A local Identity Provider (IDP) server for testing LivePerson consumer authentic
 - ✅ LivePerson-specific claims (lp_sdes)
 - ✅ Encryption toggle for easy testing
 - ✅ Ready for ngrok exposure
+- ✅ SAML SSO support with samlify library (handles signing and encryption)
+- ✅ Denver agent SSO integration with AttributeStatement support
 
 ## Quick Start
 
@@ -34,7 +36,6 @@ npm run generate-keys
 
 This creates RSA key pairs in the `./certs/` directory:
 - `signing-private.pem` / `signing-public.pem` - For JWT signing/verification
-- `encryption-private.pem` / `encryption-public.pem` - For JWE encryption/decryption
 
 ### 3. Add LivePerson Encryption Certificate (Optional)
 
@@ -104,6 +105,49 @@ The server includes a web-based toggle to switch between:
 3. Test authentication flow with JWE tokens
 4. Verify LivePerson can decrypt and process tokens
 
+### 1. SAML AttributeStatement Test
+
+To validate that SAML responses include the required attributes for LivePerson:
+
+```bash
+node test-saml-attributes.js
+```
+
+This test verifies that:
+- SAML responses contain `AttributeStatement` section
+- `loginName` and `siteId` attributes are properly included
+- NameID is populated correctly
+- AuthnStatement is present with proper timestamps
+
+### 2. Implicit Flow Test
+
+Visit the authorization endpoint directly:
+```
+http://localhost:3000/authorize?client_id=test&redirect_uri=http://localhost:3000&response_type=id_token&scope=openid&state=test&nonce=123
+```
+
+### 3. Token Endpoint Test
+
+```bash
+curl -X POST http://localhost:3000/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code&code=test&client_id=test"
+```
+
+### 4. Toggle Encryption Test
+
+```bash
+# Enable encryption
+curl -X POST http://localhost:3000/toggle-encryption \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+
+# Disable encryption  
+curl -X POST http://localhost:3000/toggle-encryption \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+```
+
 ## LivePerson Configuration
 
 ### 1. Consumer Authentication Connector Setup
@@ -132,9 +176,7 @@ Get the encryption public key from:
 https://your-ngrok-url.ngrok.io/encryption-public-key
 ```
 
-This endpoint returns:
-- LivePerson's certificate (`lpsso2026.pem`) if available
-- Generated test certificate as fallback
+This endpoint returns the LivePerson certificate (`lpsso2026.pem`) if available in the `./certs/` directory.
 
 ### 3. Test User Data
 
@@ -175,52 +217,23 @@ Visit `http://localhost:3000` (or your ngrok URL) to see:
 
 The page auto-refreshes every 10 seconds to show new requests.
 
-## Testing the Flow
-
-### 1. Implicit Flow Test
-
-Visit the authorization endpoint directly:
-```
-http://localhost:3000/authorize?client_id=test&redirect_uri=http://localhost:3000&response_type=id_token&scope=openid&state=test&nonce=123
-```
-
-### 2. Token Endpoint Test
-
-```bash
-curl -X POST http://localhost:3000/token \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=authorization_code&code=test&client_id=test"
-```
-
-### 3. Toggle Encryption Test
-
-```bash
-# Enable encryption
-curl -X POST http://localhost:3000/toggle-encryption \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true}'
-
-# Disable encryption  
-curl -X POST http://localhost:3000/toggle-encryption \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": false}'
-```
-
 ## File Structure
 
 ```
-├── server.js              # Main server application
-├── generate-keys.js       # Key generation script
-├── package.json           # Dependencies and scripts
-├── README.md             # This file
-├── test-endpoints.ps1    # PowerShell test script
-├── test-endpoints.bat    # Batch test script
-└── certs/                # Generated certificates
-    ├── signing-private.pem
-    ├── signing-public.pem
-    ├── encryption-private.pem
-    ├── encryption-public.pem
-    └── lpsso2026.pem      # LivePerson certificate (place manually)
+├── server.js                  # Main server application
+├── generate-keys.js           # Key generation script
+├── generate-certificate.js    # Certificate generation utility
+├── test-saml-attributes.js    # SAML AttributeStatement test
+├── package.json               # Dependencies and scripts
+├── README.md                  # This file
+├── test-endpoints.ps1         # PowerShell test script
+├── test-endpoints.bat         # Batch test script
+└── certs/                     # Certificate files (all actively used)
+    ├── lpsso2026.pem          # LivePerson encryption certificate (for JWE)
+    ├── samlify-signing-cert.pem # SAML signing certificate
+    ├── samlify-private.pem    # SAML signing private key
+    ├── signing-private.pem    # JWT signing private key
+    └── signing-public.pem     # JWT signing public key
 ```
 
 ## JWE Implementation Notes

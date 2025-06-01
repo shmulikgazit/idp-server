@@ -35,7 +35,7 @@ try {
 # Test token endpoint
 Write-Host "`n4. Testing token endpoint..." -ForegroundColor Yellow
 try {
-    $body = "grant_type=authorization_code" + "&" + "code=test" + "&" + "client_id=test"
+    $body = "grant_type=authorization_code&code=test&client_id=test"
     $token = Invoke-WebRequest -Uri "http://localhost:3000/token" -Method POST -Body $body -ContentType "application/x-www-form-urlencoded"
     Write-Host "✓ Token endpoint working" -ForegroundColor Green
     $tokenData = $token.Content | ConvertFrom-Json
