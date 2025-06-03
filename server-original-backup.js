@@ -10,11 +10,6 @@ const crypto = require('crypto');
 const axios = require('axios'); // For API calls to LivePerson
 const saml = require('samlify');
 
-// Import SAML modules
-const { loadLivePersonCertificate, encryptSAMLAssertion } = require('./saml/saml-encryption');
-const { initializeSAML, getIdentityProvider, getServiceProvider, validateCertificateWithNodeCrypto, loadSigningCertificate, loadSigningPrivateKey } = require('./saml/saml-core');
-const { createSAMLResponse, createCustomSAMLResponse, signSAMLAssertion } = require('./saml/saml-response');
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -58,6 +53,637 @@ function verifyCodeChallenge(codeVerifier, codeChallenge, method) {
     return false;
 }
 
+// Add certificate validation function
+function validateCertificateWithNodeCrypto(certPem, certName) {
+    try {
+        console.log(`🔍 Validating ${certName} with Node.js crypto...`);
+        
+        // Try to create a public key from the certificate
+        const crypto = require('crypto');
+        const publicKey = crypto.createPublicKey(certPem);
+        
+        console.log(`✅ ${certName} is valid - key type:`, publicKey.asymmetricKeyType);
+        console.log(`✅ ${certName} key size:`, publicKey.asymmetricKeySize);
+        
+        // Try to get the certificate details
+        const x509 = new crypto.X509Certificate(certPem);
+        console.log(`✅ ${certName} subject:`, x509.subject);
+        console.log(`✅ ${certName} issuer:`, x509.issuer);
+        console.log(`✅ ${certName} valid from:`, x509.validFrom);
+        console.log(`✅ ${certName} valid to:`, x509.validTo);
+        
+        return true;
+    } catch (error) {
+        console.error(`❌ ${certName} validation failed:`, error.message);
+        return false;
+    }
+}
+
+// SAML Configuration using samlify library
+function initializeSAML() {
+    try {
+        console.log('🔧 Initializing SAML with samlify library...');
+        
+        // Load certificates with debugging
+        const signingCert = loadSigningCertificate();
+        const signingKey = loadSigningPrivateKey();
+        const encryptionCert = loadLivePersonCertificate();
+        
+        console.log('🔍 Certificate debugging:');
+        console.log('  Signing cert type:', typeof signingCert, 'length:', signingCert ? signingCert.length : 'null');
+        console.log('  Signing key type:', typeof signingKey, 'length:', signingKey ? signingKey.length : 'null');
+        console.log('  Encryption cert type:', typeof encryptionCert, 'length:', encryptionCert ? encryptionCert.length : 'null');
+        
+        if (signingCert) {
+            console.log('  Signing cert preview:', signingCert.substring(0, 100) + '...');
+        }
+        if (encryptionCert) {
+            console.log('  Encryption cert preview:', encryptionCert.substring(0, 100) + '...');
+        }
+        
+        if (!signingCert || !signingKey) {
+            throw new Error('Signing certificate or private key not available - required for SAML');
+        }
+        
+        // Validate certificates with Node.js crypto before passing to samlify
+        console.log('🔍 Validating certificates with Node.js crypto...');
+        const signingCertValid = validateCertificateWithNodeCrypto(signingCert, 'Signing Certificate');
+        
+        if (!signingCertValid) {
+            throw new Error('Signing certificate failed Node.js crypto validation');
+        }
+        
+        if (encryptionCert) {
+            const encryptionCertValid = validateCertificateWithNodeCrypto(encryptionCert, 'Encryption Certificate');
+            if (!encryptionCertValid) {
+                console.log('⚠ Encryption certificate failed validation - proceeding without encryption');
+                encryptionCert = null;
+            }
+        }
+        
+        // Validate certificate formats before passing to samlify
+        console.log('🔍 Validating certificate formats...');
+        
+        // Validate signing certificate (PEM format with headers)
+        if (!signingCert || signingCert.length < 100) {
+            throw new Error('Signing certificate format is invalid - too short or empty');
+        }
+        
+        if (!signingCert.includes('-----BEGIN CERTIFICATE-----') || !signingCert.includes('-----END CERTIFICATE-----')) {
+            throw new Error('Signing certificate format is invalid - missing proper BEGIN/END markers');
+        }
+        
+        console.log('✅ Signing certificate format is valid');
+        
+        // Validate private key (PEM format with headers)
+        if (!signingKey.includes('-----BEGIN') || !signingKey.includes('-----END')) {
+            throw new Error('Private key format is invalid - missing proper BEGIN/END markers');
+        }
+        
+        console.log('✅ Private key format is valid');
+        
+        // Validate encryption certificate if present (PEM format with headers)
+        if (encryptionCert) {
+            if (encryptionCert.length < 100) {
+                console.log('⚠ Encryption certificate format is invalid - will proceed without encryption');
+                encryptionCert = null;
+            } else if (!encryptionCert.includes('-----BEGIN CERTIFICATE-----') || !encryptionCert.includes('-----END CERTIFICATE-----')) {
+                console.log('⚠ Encryption certificate format is invalid - will proceed without encryption');
+                encryptionCert = null;
+            } else {
+                console.log('✅ Encryption certificate format is valid');
+            }
+        }
+        
+        console.log('✅ Certificate formats validated');
+        
+        // Create Identity Provider configuration
+        console.log('🔍 Creating Identity Provider with:');
+        console.log('  - signingCert type:', typeof signingCert, 'length:', signingCert ? signingCert.length : 'null');
+        console.log('  - privateKey type:', typeof signingKey, 'length:', signingKey ? signingKey.length : 'null');
+        console.log('  - encryptCert type:', typeof encryptionCert, 'length:', encryptionCert ? encryptionCert.length : 'null');
+        
+        // Try to create the identity provider with error handling
+        try {
+            console.log('🔍 Creating Identity Provider with certificates...');
+            console.log('🔍 Signing cert sample:', signingCert.substring(0, 20) + '...');
+            console.log('🔍 Private key sample:', signingKey.substring(0, 50) + '...');
+            if (encryptionCert) {
+                console.log('🔍 Encryption cert sample:', encryptionCert.substring(0, 20) + '...');
+            }
+            
+            // Create Identity Provider using the correct samlify format
+            // Based on official documentation: use privateKey and metadata approach
+            identityProvider = saml.IdentityProvider({
+                privateKey: signingKey,
+                isAssertionEncrypted: false,  // Always disable samlify encryption to avoid certificate parsing issues
+                metadata: `<?xml version="1.0"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.liveperson.com">
+  <IDPSSODescriptor WantAuthnRequestsSigned="false" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing">
+      <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
+        <X509Data>
+          <X509Certificate>${signingCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '')}</X509Certificate>
+        </X509Data>
+      </KeyInfo>
+    </KeyDescriptor>
+    <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</NameIDFormat>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.liveperson.com/sso"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>`,
+                loginResponseTemplate: {
+                    context: `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{ID}" Version="2.0" IssueInstant="{IssueInstant}" Destination="{Destination}" InResponseTo="{InResponseTo}">
+    <saml:Issuer>{Issuer}</saml:Issuer>
+    <samlp:Status>
+        <samlp:StatusCode Value="{StatusCode}"/>
+    </samlp:Status>
+    <saml:Assertion xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="{AssertionID}" Version="2.0" IssueInstant="{IssueInstant}">
+        <saml:Issuer>{Issuer}</saml:Issuer>
+        <saml:Subject>
+            <saml:NameID Format="{NameIDFormat}">{NameID}</saml:NameID>
+            <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+                <saml:SubjectConfirmationData NotOnOrAfter="{SubjectConfirmationDataNotOnOrAfter}" Recipient="{SubjectRecipient}" InResponseTo="{InResponseTo}"/>
+            </saml:SubjectConfirmation>
+        </saml:Subject>
+        <saml:Conditions NotBefore="{ConditionsNotBefore}" NotOnOrAfter="{ConditionsNotOnOrAfter}">
+            <saml:AudienceRestriction>
+                <saml:Audience>{Audience}</saml:Audience>
+            </saml:AudienceRestriction>
+        </saml:Conditions>
+        <saml:AuthnStatement AuthnInstant="{AuthnInstant}" SessionIndex="{SessionIndex}">
+            <saml:AuthnContext>
+                <saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:Password</saml:AuthnContextClassRef>
+            </saml:AuthnContext>
+        </saml:AuthnStatement>
+        <saml:AttributeStatement>
+            <saml:Attribute Name="loginName" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:basic">
+                <saml:AttributeValue xsi:type="xs:string">{LoginName}</saml:AttributeValue>
+            </saml:Attribute>
+            <saml:Attribute Name="siteId" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:basic">
+                <saml:AttributeValue xsi:type="xs:string">{SiteId}</saml:AttributeValue>
+            </saml:Attribute>
+        </saml:AttributeStatement>
+    </saml:Assertion>
+</samlp:Response>`,
+                }
+            });
+            
+            console.log('✅ Identity Provider created successfully');
+            
+            // Verify the certificates were properly set
+            console.log('🔍 Verifying Identity Provider certificate configuration...');
+            console.log('🔍 IDP entityMeta signingCert type:', typeof identityProvider.entityMeta?.signingCert);
+            console.log('🔍 IDP entityMeta privateKey type:', typeof identityProvider.entityMeta?.privateKey);
+            console.log('🔍 IDP entityMeta encryptCert type:', typeof identityProvider.entityMeta?.encryptCert);
+            
+            // Check the metadata includes the certificate
+            const metadata = identityProvider.getMetadata();
+            console.log('🔍 Generated metadata includes KeyDescriptor:', metadata.includes('KeyDescriptor'));
+            console.log('🔍 Generated metadata includes X509Certificate:', metadata.includes('X509Certificate'));
+            
+        } catch (idpError) {
+            console.error('❌ Failed to create Identity Provider:', idpError.message);
+            console.error('🔍 IDP Error details:', idpError.stack);
+            throw new Error(`Identity Provider creation failed: ${idpError.message}`);
+        }
+        
+        // Create a generic Service Provider configuration for LivePerson
+        try {
+            console.log('🔍 Creating Service Provider...');
+            
+            // Build SP metadata XML with encryption certificate if available
+            let spMetadataXml = `<?xml version="1.0"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="LEna2">
+  <SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">`;
+
+            // Add encryption KeyDescriptor if encryption certificate is available
+            if (encryptionCert) {
+                console.log('🔍 Adding encryption certificate to SP metadata...');
+                spMetadataXml += `
+    <KeyDescriptor use="encryption">
+      <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
+        <X509Data>
+          <X509Certificate>${encryptionCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '')}</X509Certificate>
+        </X509Data>
+      </KeyInfo>
+    </KeyDescriptor>`;
+            }
+
+            spMetadataXml += `
+    <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</NameIDFormat>
+    <AssertionConsumerService index="0" Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://placeholder.liveperson.com/acs"/>
+  </SPSSODescriptor>
+</EntityDescriptor>`;
+
+            console.log('🔍 SP metadata XML includes encryption KeyDescriptor:', spMetadataXml.includes('use="encryption"'));
+            
+            serviceProvider = saml.ServiceProvider({
+                metadata: spMetadataXml
+            });
+            console.log('✅ Service Provider created successfully with encryption certificate in metadata');
+        } catch (spError) {
+            console.error('❌ Failed to create Service Provider:', spError.message);
+            console.error('🔍 SP Error details:', spError.stack);
+            throw new Error(`Service Provider creation failed: ${spError.message}`);
+        }
+        
+        console.log('✅ SAML initialized successfully with samlify');
+        console.log('🔐 Signing certificate loaded:', !!signingCert);
+        console.log('🔑 Private key loaded:', !!signingKey);
+        console.log('🔒 Encryption certificate loaded:', !!encryptionCert);
+        
+        return true;
+        
+    } catch (error) {
+        console.error('❌ Failed to initialize SAML:', error.message);
+        console.error('📋 SAML functionality will not be available');
+        console.error('🔍 Full error stack:', error.stack);
+        identityProvider = null;
+        serviceProvider = null;
+        return false;
+    }
+}
+
+async function createSAMLResponse(siteId, loginName, destinationUrl, shouldEncrypt = false) {
+    console.log('🔧 Creating SAML Response with samlify library...');
+    console.log('📍 Destination URL:', destinationUrl);
+    console.log('🔐 Encryption requested:', shouldEncrypt);
+    
+    if (!identityProvider || !serviceProvider) {
+        throw new Error('SAML not properly initialized - standard library required');
+    }
+    
+    // Update service provider ACS URL dynamically
+    const spConfig = serviceProvider.getMetadata();
+    spConfig.assertionConsumerService = [{
+        Binding: 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST',
+        Location: destinationUrl
+    }];
+    
+    // Create updated service provider with correct destination
+    const encryptionCert = shouldEncrypt ? loadLivePersonCertificate() : undefined;
+    console.log('🔍 Encryption certificate loaded:', !!encryptionCert);
+    
+    // Build dynamic SP metadata XML with encryption certificate if needed
+    let dynamicSpMetadataXml = `<?xml version="1.0"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="LEna2">
+  <SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">`;
+
+    // Add encryption KeyDescriptor if encryption is requested
+    if (shouldEncrypt && encryptionCert) {
+        console.log('🔍 Adding encryption certificate to dynamic SP metadata...');
+        dynamicSpMetadataXml += `
+    <KeyDescriptor use="encryption">
+      <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
+        <X509Data>
+          <X509Certificate>${encryptionCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '')}</X509Certificate>
+        </X509Data>
+      </KeyInfo>
+    </KeyDescriptor>`;
+    }
+
+    dynamicSpMetadataXml += `
+    <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</NameIDFormat>
+    <AssertionConsumerService index="0" Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="${destinationUrl}"/>
+  </SPSSODescriptor>
+</EntityDescriptor>`;
+
+    console.log('🔍 Dynamic SP metadata includes encryption KeyDescriptor:', dynamicSpMetadataXml.includes('use="encryption"'));
+    
+    const dynamicSP = saml.ServiceProvider({
+        metadata: dynamicSpMetadataXml
+    });
+    
+    console.log('🔍 Service Provider created with encryption certificate in metadata:', shouldEncrypt && !!encryptionCert);
+    
+    // Create user attributes
+    const user = {
+        nameID: loginName,
+        nameIDFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified',
+        attributes: {
+            'loginName': loginName,
+            'siteId': siteId
+        }
+    };
+    
+    console.log('👤 User object for SAML generation:', JSON.stringify(user, null, 2));
+    
+    // Create the customTagReplacement function
+    const customTagReplacementFunction = (template) => {
+        console.log('🔧 customTagReplacement called with template length:', template.length);
+        
+        // Replace all the template variables
+        let processedTemplate = template
+            .replace(/{ID}/g, 'response_' + Math.random().toString(36).substr(2, 9))
+            .replace(/{AssertionID}/g, 'assertion_' + Math.random().toString(36).substr(2, 9))
+            .replace(/{IssueInstant}/g, new Date().toISOString())
+            .replace(/{Destination}/g, destinationUrl)
+            .replace(/{Issuer}/g, 'https://idp.liveperson.com')
+            .replace(/{StatusCode}/g, 'urn:oasis:names:tc:SAML:2.0:status:Success')
+            .replace(/{NameIDFormat}/g, 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified')
+            .replace(/{NameID}/g, loginName)
+            .replace(/{SubjectConfirmationDataNotOnOrAfter}/g, new Date(Date.now() + 5 * 60 * 1000).toISOString())
+            .replace(/{SubjectRecipient}/g, destinationUrl)
+            .replace(/{InResponseTo}/g, '')
+            .replace(/{ConditionsNotBefore}/g, new Date().toISOString())
+            .replace(/{ConditionsNotOnOrAfter}/g, new Date(Date.now() + 5 * 60 * 1000).toISOString())
+            .replace(/{Audience}/g, 'LEna2')
+            .replace(/{AuthnInstant}/g, new Date().toISOString())
+            .replace(/{SessionIndex}/g, 'session_' + Math.random().toString(36).substr(2, 9))
+            .replace(/{LoginName}/g, loginName)
+            .replace(/{SiteId}/g, siteId);
+        
+        console.log('✅ Template processed, contains LoginName:', processedTemplate.includes(loginName));
+        console.log('✅ Template processed, contains SiteId:', processedTemplate.includes(siteId));
+        console.log('✅ Template processed, contains AttributeStatement:', processedTemplate.includes('AttributeStatement'));
+        
+        return {
+            id: 'custom_response_id_' + Math.random().toString(36).substr(2, 9),
+            context: processedTemplate
+        };
+    };
+
+    // Call createLoginResponse with correct parameter order
+    console.log('🔍 Calling samlify createLoginResponse...');
+    const responseResult = await identityProvider.createLoginResponse(
+        dynamicSP,
+        null,
+        'post',
+        user,
+        customTagReplacementFunction,  // 5th parameter: customTagReplacement function
+        shouldEncrypt,                 // 6th parameter: encryptThenSign (boolean)
+        null                          // 7th parameter: relayState
+    );
+    
+    console.log('🔍 Samlify createLoginResponse completed');
+    console.log('🔍 Response result type:', typeof responseResult);
+    console.log('🔍 Response result keys:', responseResult ? Object.keys(responseResult) : 'null');
+    
+    // Extract the actual SAML response from the result
+    let samlResponse;
+    if (responseResult && responseResult.context) {
+        samlResponse = responseResult.context;
+    } else if (typeof responseResult === 'string') {
+        samlResponse = responseResult;
+    } else if (responseResult && responseResult.samlContent) {
+        samlResponse = responseResult.samlContent;
+    } else {
+        throw new Error('Unable to extract SAML response from samlify result - invalid response structure');
+    }
+    
+    if (!samlResponse || typeof samlResponse !== 'string') {
+        throw new Error('SAML response is invalid or empty');
+    }
+    
+    console.log('✅ SAML Response created with samlify');
+    console.log('📏 Response length:', samlResponse.length, 'characters');
+    console.log('🔐 Encryption status:', shouldEncrypt ? 'ENCRYPTED' : 'UNENCRYPTED');
+    console.log('🔐 Signing status: SIGNED');
+    
+    // Debug: Check if the response is XML or Base64
+    console.log('🔍 SAML Response first 100 chars:', samlResponse.substring(0, 100));
+    console.log('🔍 SAML Response starts with XML:', samlResponse.trim().startsWith('<'));
+    
+    // Samlify returns Base64 encoded XML in the context field, so we need to decode it
+    let actualXmlResponse = samlResponse;
+    if (!samlResponse.trim().startsWith('<')) {
+        console.log('🔍 Response appears to be Base64 encoded, attempting to decode...');
+        try {
+            actualXmlResponse = Buffer.from(samlResponse, 'base64').toString('utf8');
+            console.log('✅ Successfully decoded Base64 to XML');
+            console.log('🔍 Decoded XML first 100 chars:', actualXmlResponse.substring(0, 100));
+        } catch (decodeError) {
+            console.log('❌ Failed to decode as Base64:', decodeError.message);
+            console.log('🔍 Using original response as-is');
+            actualXmlResponse = samlResponse;
+        }
+    }
+    
+    // Debug: Check for attribute statements in the XML
+    console.log('🔍 Checking for AttributeStatement in SAML...');
+    console.log('🔍 Contains AttributeStatement:', actualXmlResponse.includes('AttributeStatement'));
+    console.log('🔍 Contains loginName:', actualXmlResponse.includes('loginName'));
+    console.log('🔍 Contains siteId:', actualXmlResponse.includes('siteId'));
+    
+    // Debug: Check for encryption in the XML
+    console.log('🔍 Checking for encryption in SAML...');
+    console.log('🔍 Contains EncryptedAssertion:', actualXmlResponse.includes('EncryptedAssertion'));
+    console.log('🔍 Contains EncryptedData:', actualXmlResponse.includes('EncryptedData'));
+    console.log('🔍 Contains CipherValue:', actualXmlResponse.includes('CipherValue'));
+    
+    // Determine if the response is actually encrypted
+    const isActuallyEncrypted = actualXmlResponse.includes('EncryptedAssertion') || 
+                               actualXmlResponse.includes('EncryptedData');
+    
+    const method = isActuallyEncrypted ? 'SAMLIFY_SIGNED_ENCRYPTED' : 'SAMLIFY_SIGNED';
+    console.log('🔍 Final method determined:', method);
+    
+    return {
+        samlResponse: actualXmlResponse,
+        method: method
+    };
+}
+
+// Custom SAML generation fallback function
+async function createCustomSAMLResponse(siteId, loginName, destinationUrl, shouldEncrypt = false) {
+    console.log('🔧 Creating custom SAML Response (fallback method)...');
+    console.log('📍 Destination URL:', destinationUrl);
+    console.log('🔐 Encryption requested:', shouldEncrypt);
+    
+    try {
+        // Generate unique IDs
+        const responseId = 'response_' + Math.random().toString(36).substr(2, 9);
+        const assertionId = 'assertion_' + Math.random().toString(36).substr(2, 9);
+        const sessionIndex = 'session_' + Math.random().toString(36).substr(2, 9);
+        
+        // Generate timestamps
+        const now = new Date();
+        const issueInstant = now.toISOString();
+        const notBefore = new Date(now.getTime() - 5 * 60 * 1000).toISOString(); // 5 minutes ago
+        const notOnOrAfter = new Date(now.getTime() + 10 * 60 * 1000).toISOString(); // 10 minutes from now
+        
+        // Create SAML Response XML with Okta-compatible format
+        const samlResponseXml = `<?xml version="1.0" encoding="UTF-8"?>
+<saml2p:Response xmlns:saml2p="urn:oasis:names:tc:SAML:2.0:protocol" 
+                 xmlns:saml2="urn:oasis:names:tc:SAML:2.0:assertion"
+                 xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                 ID="${responseId}" 
+                 Version="2.0" 
+                 IssueInstant="${issueInstant}" 
+                 Destination="${destinationUrl}">
+    <saml2:Issuer>https://idp.liveperson.com</saml2:Issuer>
+    <saml2p:Status>
+        <saml2p:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+    </saml2p:Status>
+    <saml2:Assertion ID="${assertionId}" 
+                     Version="2.0" 
+                     IssueInstant="${issueInstant}">
+        <saml2:Issuer>https://idp.liveperson.com</saml2:Issuer>
+        <saml2:Subject>
+            <saml2:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified">${loginName}</saml2:NameID>
+            <saml2:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+                <saml2:SubjectConfirmationData NotOnOrAfter="${notOnOrAfter}" 
+                                               Recipient="${destinationUrl}"/>
+            </saml2:SubjectConfirmation>
+        </saml2:Subject>
+        <saml2:Conditions NotBefore="${notBefore}" NotOnOrAfter="${notOnOrAfter}">
+            <saml2:AudienceRestriction>
+                <saml2:Audience>LEna2</saml2:Audience>
+            </saml2:AudienceRestriction>
+        </saml2:Conditions>
+        <saml2:AuthnStatement AuthnInstant="${issueInstant}" SessionIndex="${sessionIndex}">
+            <saml2:AuthnContext>
+                <saml2:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml2:AuthnContextClassRef>
+            </saml2:AuthnContext>
+        </saml2:AuthnStatement>
+        <saml2:AttributeStatement>
+            <saml2:Attribute Name="loginName" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:basic">
+                <saml2:AttributeValue xsi:type="xs:string">${loginName}</saml2:AttributeValue>
+            </saml2:Attribute>
+            <saml2:Attribute Name="siteId" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:basic">
+                <saml2:AttributeValue xsi:type="xs:string">${siteId}</saml2:AttributeValue>
+            </saml2:Attribute>
+        </saml2:AttributeStatement>
+    </saml2:Assertion>
+</saml2p:Response>`;
+
+        // Sign the SAML assertion
+        const signedXml = await signXMLAssertion(samlResponseXml);
+        
+        // Encrypt if requested
+        let finalXml = signedXml;
+        if (shouldEncrypt) {
+            const encryptionCert = loadLivePersonCertificate();
+            if (encryptionCert) {
+                console.log('🔐 Encrypting SAML assertion...');
+                finalXml = await encryptSAMLAssertion(signedXml, encryptionCert);
+            } else {
+                console.log('⚠ Encryption requested but no encryption certificate available');
+            }
+        }
+        
+        console.log('✅ Custom SAML Response created successfully');
+        console.log('📏 Response length:', finalXml.length, 'characters');
+        console.log('🔐 Encryption status:', shouldEncrypt && finalXml.includes('EncryptedAssertion') ? 'ENCRYPTED' : 'UNENCRYPTED');
+        console.log('🔐 Signing status: SIGNED');
+        
+        const method = shouldEncrypt && finalXml.includes('EncryptedAssertion') ? 'CUSTOM_SIGNED_ENCRYPTED' : 'CUSTOM_SIGNED';
+        
+        return {
+            samlResponse: finalXml,
+            method: method
+        };
+        
+    } catch (error) {
+        console.error('❌ Custom SAML generation failed:', error.message);
+        console.error('Stack:', error.stack);
+        throw error;
+    }
+}
+
+// XML signing function using xml-crypto
+async function signXMLAssertion(xmlString) {
+    console.log('🔐 Signing XML assertion with xml-crypto...');
+    
+    try {
+        const crypto = require('crypto');
+        const { DOMParser, XMLSerializer } = require('xmldom');
+        const xmlCrypto = require('xml-crypto');
+        
+        // Load signing certificate and private key
+        const signingCert = loadSigningCertificate();
+        const signingKey = loadSigningPrivateKey();
+        
+        if (!signingCert || !signingKey) {
+            throw new Error('Signing certificate or private key not available');
+        }
+        
+        // Parse the XML
+        const doc = new DOMParser().parseFromString(xmlString);
+        const assertion = doc.getElementsByTagName('saml2:Assertion')[0];
+        
+        if (!assertion) {
+            throw new Error('No SAML assertion found in XML');
+        }
+        
+        // Create signature
+        const sig = new xmlCrypto.SignedXml();
+        sig.addReference("//*[local-name(.)='Assertion']", 
+                        ["http://www.w3.org/2000/09/xmldsig#enveloped-signature", 
+                         "http://www.w3.org/2001/10/xml-exc-c14n#"], 
+                        "http://www.w3.org/2001/04/xmlenc#sha256");
+        
+        sig.signingKey = signingKey;
+        sig.keyInfoProvider = {
+            getKeyInfo: function() {
+                const certBase64 = signingCert
+                    .replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '')
+                    .replace(/\s/g, '');
+                
+                return `<X509Data><X509Certificate>${certBase64}</X509Certificate></X509Data>`;
+            }
+        };
+        
+        // Sign the assertion
+        sig.computeSignature(xmlString, {
+            location: { reference: "//*[local-name(.)='Assertion']", action: "prepend" }
+        });
+        
+        console.log('✅ XML assertion signed successfully');
+        return sig.getSignedXml();
+        
+    } catch (error) {
+        console.error('❌ XML signing failed:', error.message);
+        console.error('Stack:', error.stack);
+        throw error;
+    }
+}
+
+async function signSAMLAssertion(assertion, destinationUrl, shouldEncrypt = false) {
+    console.log('🔐 Creating SAML assertion with samlify...');
+    console.log('📍 Destination URL:', destinationUrl);
+    console.log('🔐 Encryption requested:', shouldEncrypt);
+    
+    // Always generate unencrypted SAML first (since we disabled samlify encryption)
+    const result = await createSAMLResponse(
+        assertion.siteId || 'a41244303', 
+        assertion.loginName || 'testuser', 
+        destinationUrl, 
+        false  // Always false since we handle encryption manually
+    );
+    
+    let finalXml = result.samlResponse;
+    let method = result.method;
+    
+    // If encryption is requested, encrypt the SAML manually
+    if (shouldEncrypt) {
+        console.log('🔍 Encryption requested - checking for encryption certificate...');
+        const encryptionCert = loadLivePersonCertificate();
+        console.log('🔍 Encryption certificate loaded:', !!encryptionCert);
+        if (encryptionCert) {
+            console.log('🔐 Applying manual encryption to SAML assertion...');
+            try {
+                finalXml = encryptSAMLAssertionSimple(finalXml, encryptionCert);
+                method = method.replace('SIGNED', 'SIGNED_ENCRYPTED');
+                console.log('✅ Manual encryption applied successfully');
+            } catch (encryptError) {
+                console.error('❌ Manual encryption failed:', encryptError.message);
+                console.log('🔄 Continuing with unencrypted SAML');
+            }
+        } else {
+            console.log('⚠ Encryption requested but no encryption certificate available');
+        }
+    } else {
+        console.log('🔍 Encryption not requested (shouldEncrypt = false)');
+    }
+                
+    return {
+        xml: finalXml,
+        base64: Buffer.from(finalXml).toString('base64'),
+        method: method
+    };
+}
 
 // Cleanup expired authorization codes every 5 minutes
 setInterval(() => {
@@ -1501,15 +2127,10 @@ app.post('/test-basic-auth', (req, res) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-    const identityProvider = getIdentityProvider();
-    const serviceProvider = getServiceProvider();
-    
     res.json({ 
         status: 'healthy', 
         timestamp: new Date().toISOString(),
         version: '1.0.0',
-        encryptionEnabled: encryptionEnabled,
-        flowType: flowType,
         saml: {
             initialized: !!(identityProvider && serviceProvider),
             encryption: !!loadLivePersonCertificate()
@@ -1598,6 +2219,7 @@ app.get('/agentsso-denver', (req, res) => {
                 <div class="form-group">
                     <label for="siteId">LivePerson Site ID:</label>
                     <input type="text" id="siteId" name="siteId" value="a41244303" required>
+                    <button type="button" class="btn btn-secondary" onclick="discoverBaseUri()">Discover Denver Domain</button>
                     <div id="baseUriResult"></div>
                 </div>
                 
@@ -1635,7 +2257,7 @@ app.get('/agentsso-denver', (req, res) => {
                 
                 <div class="form-group">
                     <button type="button" class="btn" onclick="generateSAMLAssertion()">Generate SAML Assertion</button>
-                    <button type="button" class="btn" onclick="loginWithDenver()">🚀 Login with Denver SSO</button>
+                    <button type="button" class="btn" onclick="loginWithDenver()">Login with Denver SSO</button>
                 </div>
             </form>
             
@@ -1739,49 +2361,19 @@ app.get('/agentsso-denver', (req, res) => {
                     return;
                 }
                 
+                // Check if Denver domain has been discovered
+                if (!discoveredBaseUri) {
+                    showStatus('Warning: Denver domain not discovered. Please discover Denver domain first for proper destination URL.', 'warning');
+                }
+                
                 try {
-                    // Step 1: Discover Denver domain first
-                    showStatus('Step 1/2: Discovering Denver domain...', 'info');
-                    const domainResponse = await fetch('/discover-denver-domain', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ siteId: siteId })
-                    });
-                    
-                    const domainResult = await domainResponse.json();
-                    
-                    if (!domainResult.success) {
-                        let errorMessage = 'Failed to discover Denver domain: ' + domainResult.error;
-                        
-                        // Add HTTP status to error message if available
-                        if (domainResult.httpStatus) {
-                            errorMessage += ' (HTTP ' + domainResult.httpStatus + ')';
-                        }
-                        
-                        // Log detailed error information to console for debugging
-                        console.error('❌ Domain Discovery Failed:', domainResult);
-                        
-                        // Log API response data if available
-                        if (domainResult.responseData) {
-                            console.error('❌ API Response Data:', domainResult.responseData);
-                        }
-                        
-                        showStatus(errorMessage, 'error');
-                        return; // HALT: Stop the assertion generation process
-                    }
-                    
-                    discoveredBaseUri = domainResult.baseURI;
-                    document.getElementById('baseUriResult').innerHTML = 
-                        '<strong>✅ Denver Domain:</strong> ' + domainResult.baseURI;
-                    
-                    // Step 2: Generate SAML assertion
-                    showStatus('Step 2/2: Generating SAML assertion...', 'info');
+                    showStatus('Generating SAML assertion...', 'info');
                     
                     const requestBody = {
                         siteId: siteId,
                         loginName: loginName,
-                        baseURI: discoveredBaseUri,
-                        shouldEncrypt: ` + encryptionEnabled + `
+                        baseURI: discoveredBaseUri, // Pass the discovered Denver domain
+                        shouldEncrypt: ` + encryptionEnabled + ` // Pass the current encryption setting
                     };
                     
                     const response = await fetch('/generate-saml-assertion', {
@@ -1795,9 +2387,11 @@ app.get('/agentsso-denver', (req, res) => {
                     if (result.success) {
                         document.getElementById('assertionXML').value = formatXML(result.xml);
                         document.getElementById('assertionBase64').value = result.base64;
+                        // Maintain backward compatibility
                         document.getElementById('assertionContent').value = result.xml;
                         document.getElementById('assertionResult').style.display = 'block';
                         
+                        // Show destination URL and method used
                         let successMessage = 'SAML assertion generated successfully';
                         if (result.method) {
                             successMessage += ' using ' + result.method;
@@ -1813,114 +2407,41 @@ app.get('/agentsso-denver', (req, res) => {
                         showStatus('Failed to generate SAML assertion: ' + result.error, 'error');
                     }
                 } catch (error) {
-                    showStatus('Error: ' + error.message, 'error');
+                    showStatus('Error generating SAML assertion: ' + error.message, 'error');
                 }
             }
             
             async function loginWithDenver() {
-                const siteId = document.getElementById('siteId').value;
-                const loginName = document.getElementById('loginName').value;
-                
-                if (!siteId || !loginName) {
-                    showStatus('Please fill in Site ID and Login Name', 'error');
+                if (!discoveredBaseUri) {
+                    showStatus('Please discover Denver domain first', 'error');
                     return;
                 }
                 
-                try {
-                    // Step 1: Discover Denver domain
-                    showStatus('Step 1/3: Discovering Denver domain...', 'info');
-                    const domainResponse = await fetch('/discover-denver-domain', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ siteId: siteId })
-                    });
-                    
-                    const domainResult = await domainResponse.json();
-                    
-                    if (!domainResult.success) {
-                        let errorMessage = 'Failed to discover Denver domain: ' + domainResult.error;
-                        
-                        // Add HTTP status to error message if available
-                        if (domainResult.httpStatus) {
-                            errorMessage += ' (HTTP ' + domainResult.httpStatus + ')';
-                        }
-                        
-                        // Log detailed error information to console for debugging
-                        console.error('❌ Domain Discovery Failed:', domainResult);
-                        
-                        // Log API response data if available
-                        if (domainResult.responseData) {
-                            console.error('❌ API Response Data:', domainResult.responseData);
-                        }
-                        
-                        showStatus(errorMessage, 'error');
-                        return; // HALT: Stop the login process
-                    }
-                    
-                    discoveredBaseUri = domainResult.baseURI;
-                    document.getElementById('baseUriResult').innerHTML = 
-                        '<strong>✅ Denver Domain:</strong> ' + domainResult.baseURI;
-                    
-                    // Step 2: Generate SAML assertion
-                    showStatus('Step 2/3: Generating SAML assertion...', 'info');
-                    
-                    const requestBody = {
-                        siteId: siteId,
-                        loginName: loginName,
-                        baseURI: discoveredBaseUri,
-                        shouldEncrypt: ` + encryptionEnabled + `
-                    };
-                    
-                    const assertionResponse = await fetch('/generate-saml-assertion', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(requestBody)
-                    });
-                    
-                    const assertionResult = await assertionResponse.json();
-                    
-                    if (!assertionResult.success) {
-                        showStatus('Failed to generate SAML assertion: ' + assertionResult.error, 'error');
-                        return;
-                    }
-                    
-                    // Update the UI with the generated assertion
-                    document.getElementById('assertionXML').value = formatXML(assertionResult.xml);
-                    document.getElementById('assertionBase64').value = assertionResult.base64;
-                    document.getElementById('assertionContent').value = assertionResult.xml;
-                    document.getElementById('assertionResult').style.display = 'block';
-                    
-                    // Step 3: Login with Denver SSO
-                    showStatus('Step 3/3: Redirecting to Denver SSO...', 'info');
-                    
-                    // Create form and submit to Denver
-                    const form = document.createElement('form');
-                    form.method = 'POST';
-                    form.action = 'https://' + discoveredBaseUri + '/hc/s-' + siteId + '/web/m-LP/samlAssertionMembersArea/home.jsp?lpservice=liveEngage&servicepath=a%2F~~accountid~~%2F%23%2C~~ssokey~~';
-                    form.target = '_blank';
-                    
-                    const samlInput = document.createElement('input');
-                    samlInput.type = 'hidden';
-                    samlInput.name = 'SAMLResponse';
-                    samlInput.value = assertionResult.base64;
-                    
-                    form.appendChild(samlInput);
-                    document.body.appendChild(form);
-                    form.submit();
-                    document.body.removeChild(form);
-                    
-                    let successMessage = '🚀 Successfully logged in to Denver SSO';
-                    if (assertionResult.method) {
-                        successMessage += ' using ' + assertionResult.method;
-                    }
-                    if (assertionResult.encrypted) {
-                        successMessage += ' (ENCRYPTED)';
-                    }
-                    showStatus(successMessage, 'success');
-                    
-                } catch (error) {
-                    showStatus('Error during login process: ' + error.message, 'error');
+                const siteId = document.getElementById('siteId').value;
+                const assertionBase64 = document.getElementById('assertionBase64').value;
+                
+                if (!assertionBase64) {
+                    showStatus('Please generate SAML assertion first', 'error');
+                    return;
                 }
+                
+                // Create form and submit to Denver
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = 'https://' + discoveredBaseUri + '/hc/s-' + siteId + '/web/m-LP/samlAssertionMembersArea/home.jsp?lpservice=liveEngage&servicepath=a%2F~~accountid~~%2F%23%2C~~ssokey~~';
+                form.target = '_blank';
+                
+                const samlInput = document.createElement('input');
+                samlInput.type = 'hidden';
+                samlInput.name = 'SAMLResponse';
+                samlInput.value = assertionBase64;
+                
+                form.appendChild(samlInput);
+                document.body.appendChild(form);
+                form.submit();
+                document.body.removeChild(form);
+                
+                showStatus('Redirecting to Denver SSO...', 'success');
             }
             
             function showStatus(message, type) {
@@ -1960,35 +2481,17 @@ app.post('/discover-denver-domain', async (req, res) => {
                 account: data.account
             });
         } else {
-            console.error('❌ No baseURI found in API response:', data);
             res.json({
                 success: false,
-                error: 'No baseURI found in response',
-                responseData: data
+                error: 'No baseURI found in response'
             });
         }
     } catch (error) {
         console.error('❌ Error discovering Denver domain:', error.message);
-        
-        let errorResponse = {
+        res.json({
             success: false,
             error: error.message
-        };
-        
-        // Add HTTP error details if available
-        if (error.response) {
-            errorResponse.httpStatus = error.response.status;
-            errorResponse.httpStatusText = error.response.statusText;
-            errorResponse.responseData = error.response.data;
-            
-            console.error('❌ HTTP Error Details:', {
-                status: error.response.status,
-                statusText: error.response.statusText,
-                data: error.response.data
-            });
-        }
-        
-        res.json(errorResponse);
+        });
     }
 });
 
@@ -2003,9 +2506,6 @@ app.post('/generate-saml-assertion', async (req, res) => {
     console.log('🔍 Request body received:', JSON.stringify(req.body, null, 2));
     
     // Check if SAML is properly initialized
-    const identityProvider = getIdentityProvider();
-    const serviceProvider = getServiceProvider();
-    
     if (!identityProvider || !serviceProvider) {
         console.error('❌ SAML not initialized - cannot generate assertion');
         return res.json({
@@ -2069,5 +2569,381 @@ app.post('/generate-saml-assertion', async (req, res) => {
     }
 });
 
+// Health check endpoint
 
+function loadLivePersonCertificate() {
+    try {
+        const certPath = path.join(__dirname, 'certs', 'lpsso2026.pem');
+        if (fs.existsSync(certPath)) {
+            const cert = fs.readFileSync(certPath, 'utf8');
+            console.log('✅ LivePerson encryption certificate loaded');
+            return cert;
+        } else {
+            console.log('⚠ LivePerson certificate not found at:', certPath);
+            return null;
+        }
+    } catch (error) {
+        console.error('❌ Error loading LivePerson certificate:', error.message);
+        return null;
+    }
+}
 
+function encryptSAMLAssertion(xml, encryptionCert) {
+    try {
+        const { DOMParser, XMLSerializer } = require('xmldom');
+        const xmlCrypto = require('xml-crypto');
+        
+        console.log('🔐 Starting SAML assertion encryption...');
+        
+        // Parse the XML
+        const doc = new DOMParser().parseFromString(xml);
+        
+        // Find the assertion element to encrypt
+        let assertions = doc.getElementsByTagName('saml2:Assertion');
+        if (assertions.length === 0) {
+            // Try with saml: namespace (samlify uses this)
+            assertions = doc.getElementsByTagName('saml:Assertion');
+        }
+        if (assertions.length === 0) {
+            throw new Error('No SAML assertion found to encrypt (tried both saml: and saml2: namespaces)');
+        }
+        
+        const assertion = assertions[0];
+        const assertionId = assertion.getAttribute('ID');
+        
+        console.log('🔒 Encrypting assertion with ID:', assertionId);
+        
+        // Create encrypted XML using xml-crypto
+        const encryptedXml = new xmlCrypto.EncryptedXml();
+        
+        // Configure encryption algorithms
+        encryptedXml.encryptionAlgorithm = 'http://www.w3.org/2001/04/xmlenc#aes256-cbc';
+        encryptedXml.keyEncryptionAlgorithm = 'http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p';
+        
+        // Set the encryption certificate
+        encryptedXml.publicCert = encryptionCert;
+        
+        // Encrypt the assertion element
+        const encryptedAssertion = encryptedXml.encrypt(assertion);
+        
+        // Replace the original assertion with encrypted assertion
+        const parent = assertion.parentNode;
+        parent.removeChild(assertion);
+        
+        // Create EncryptedAssertion element
+        const encryptedAssertionElement = doc.createElement('saml2:EncryptedAssertion');
+        encryptedAssertionElement.setAttribute('xmlns:saml2', 'urn:oasis:names:tc:SAML:2.0:assertion');
+        encryptedAssertionElement.appendChild(encryptedAssertion);
+        
+        parent.appendChild(encryptedAssertionElement);
+        
+        const serializer = new XMLSerializer();
+        const encryptedXmlString = serializer.serializeToString(doc);
+        
+        console.log('✅ SAML assertion encrypted successfully');
+        console.log('📏 Encrypted XML length:', encryptedXmlString.length, 'characters');
+        
+        return encryptedXmlString;
+        
+    } catch (error) {
+        console.error('❌ SAML encryption failed:', error.message);
+        console.error('Stack:', error.stack);
+        throw error;
+    }
+}
+
+// Alternative simpler encryption approach using Node.js crypto
+function encryptSAMLAssertionSimple(xml, encryptionCert) {
+    try {
+        const crypto = require('crypto');
+        const { DOMParser, XMLSerializer } = require('xmldom');
+        
+        console.log('🔐 Starting simple SAML assertion encryption...');
+        console.log('📄 Input XML length:', xml.length);
+        console.log('📄 First 500 chars of XML:', xml.substring(0, 500));
+        
+        // Check if the XML is Base64 encoded (doesn't start with '<')
+        let actualXml = xml;
+        if (!xml.trim().startsWith('<')) {
+            console.log('🔍 XML appears to be Base64 encoded, decoding...');
+            try {
+                actualXml = Buffer.from(xml, 'base64').toString('utf8');
+                console.log('✅ Successfully decoded Base64 to XML');
+                console.log('📄 Decoded XML length:', actualXml.length);
+                console.log('📄 First 500 chars of decoded XML:', actualXml.substring(0, 500));
+            } catch (decodeError) {
+                console.log('❌ Failed to decode as Base64, using original:', decodeError.message);
+                actualXml = xml;
+            }
+        }
+        
+        // Parse the XML
+        const doc = new DOMParser().parseFromString(actualXml);
+        
+        console.log('🔍 Parsed XML document:', !!doc);
+        console.log('🔍 Document element:', doc.documentElement ? doc.documentElement.tagName : 'null');
+        
+        // Find the assertion element to encrypt
+        let assertions = doc.getElementsByTagName('saml2:Assertion');
+        console.log('🔍 Found saml2:Assertion elements:', assertions.length);
+        
+        if (assertions.length === 0) {
+            // Try with saml: namespace (samlify uses this)
+            assertions = doc.getElementsByTagName('saml:Assertion');
+            console.log('🔍 Found saml:Assertion elements:', assertions.length);
+        }
+        
+        // Also try without namespace prefix
+        if (assertions.length === 0) {
+            assertions = doc.getElementsByTagName('Assertion');
+            console.log('🔍 Found Assertion elements (no namespace):', assertions.length);
+        }
+        
+        // Debug: List all elements in the document
+        if (assertions.length === 0) {
+            console.log('🔍 Debugging: All elements in document:');
+            const allElements = doc.getElementsByTagName('*');
+            for (let i = 0; i < Math.min(allElements.length, 10); i++) {
+                console.log(`   ${i}: ${allElements[i].tagName}`);
+            }
+        }
+        
+        if (assertions.length === 0) {
+            throw new Error('No SAML assertion found to encrypt (tried both saml: and saml2: namespaces)');
+        }
+        
+        const assertion = assertions[0];
+        const assertionId = assertion.getAttribute('ID');
+        
+        console.log('🔒 Encrypting assertion with ID:', assertionId);
+        
+        // Extract assertion XML
+        const serializer = new XMLSerializer();
+        const assertionXml = serializer.serializeToString(assertion);
+        
+        // Generate symmetric key for AES encryption
+        const symmetricKey = crypto.randomBytes(32); // 256-bit key for AES-256
+        const iv = crypto.randomBytes(16); // 128-bit IV
+        
+        // Encrypt assertion with AES using modern API
+        const cipher = crypto.createCipheriv('aes-256-cbc', symmetricKey, iv);
+        let encryptedData = cipher.update(assertionXml, 'utf8', 'base64');
+        encryptedData += cipher.final('base64');
+        
+        // Encrypt symmetric key with RSA (LivePerson certificate)
+        const publicKey = crypto.createPublicKey(encryptionCert);
+        const encryptedKey = crypto.publicEncrypt({
+            key: publicKey,
+            padding: crypto.constants.RSA_PKCS1_OAEP_PADDING,
+            oaepHash: 'sha256'
+        }, symmetricKey);
+        
+        // Create EncryptedAssertion structure
+        const encryptedAssertionXml = `
+        <saml2:EncryptedAssertion xmlns:saml2="urn:oasis:names:tc:SAML:2.0:assertion">
+            <xenc:EncryptedData Type="http://www.w3.org/2001/04/xmlenc#Element" xmlns:xenc="http://www.w3.org/2001/04/xmlenc#">
+                <xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes256-cbc"/>
+                <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+                    <xenc:EncryptedKey>
+                        <xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p"/>
+                        <xenc:CipherData>
+                            <xenc:CipherValue>${encryptedKey.toString('base64')}</xenc:CipherValue>
+                        </xenc:CipherData>
+                    </xenc:EncryptedKey>
+                </ds:KeyInfo>
+                <xenc:CipherData>
+                    <xenc:CipherValue>${encryptedData}</xenc:CipherValue>
+                </xenc:CipherData>
+            </xenc:EncryptedData>
+        </saml2:EncryptedAssertion>`;
+        
+        // Replace assertion with encrypted assertion
+        const parent = assertion.parentNode;
+        parent.removeChild(assertion);
+        
+        // Parse and insert encrypted assertion
+        const encryptedDoc = new DOMParser().parseFromString(encryptedAssertionXml);
+        const encryptedElement = encryptedDoc.documentElement;
+        const importedElement = doc.importNode(encryptedElement, true);
+        parent.appendChild(importedElement);
+        
+        const finalXml = serializer.serializeToString(doc);
+        
+        console.log('✅ SAML assertion encrypted successfully (simple method)');
+        console.log('📏 Encrypted XML length:', finalXml.length, 'characters');
+        
+        return finalXml;
+        
+    } catch (error) {
+        console.error('❌ Simple SAML encryption failed:', error.message);
+        console.error('Stack:', error.stack);
+        throw error;
+    }
+}
+
+// Certificate loading helper functions
+function loadSigningCertificate() {
+    console.log('🔍 loadSigningCertificate() called');
+    try {
+        // Use the samlify signing certificate (no fallback - SAML needs consistent cert)
+        const certPath = path.join(__dirname, 'certs', 'samlify-signing-cert.pem');
+        console.log('🔍 Checking for certificate at:', certPath);
+        console.log('🔍 File exists:', fs.existsSync(certPath));
+        
+        if (fs.existsSync(certPath)) {
+            let cert = fs.readFileSync(certPath, 'utf8');
+            
+            // Clean the certificate - remove extra whitespace and ensure proper format
+            cert = cert.trim();
+            
+            // Ensure it has proper BEGIN/END markers
+            if (!cert.includes('-----BEGIN CERTIFICATE-----')) {
+                console.log('❌ Certificate missing BEGIN marker');
+                return null;
+            }
+            if (!cert.includes('-----END CERTIFICATE-----')) {
+                console.log('❌ Certificate missing END marker');
+                return null;
+            }
+            
+            // Clean up the certificate format - remove extra spaces and normalize line endings
+            const lines = cert.split(/\r?\n/);
+            const cleanedLines = [];
+            
+            for (let line of lines) {
+                // Remove trailing spaces from each line
+                line = line.replace(/\s+$/, '');
+                if (line.length > 0) {
+                    cleanedLines.push(line);
+                }
+            }
+            
+            cert = cleanedLines.join('\n');
+            
+            // Ensure it ends with a newline
+            if (!cert.endsWith('\n')) {
+                cert += '\n';
+            }
+            
+            console.log('✅ Signing certificate loaded (samlify-signing-cert.pem)');
+            console.log('🔍 Certificate length:', cert.length);
+            console.log('🔍 Certificate starts with:', cert.substring(0, 50));
+            console.log('🔍 Certificate ends with:', cert.substring(cert.length - 50));
+            return cert;
+        }
+        
+        console.log('❌ SAML signing certificate (samlify-signing-cert.pem) not found');
+        console.log('   Please ensure the certificate file exists in the certs directory');
+        return null;
+    } catch (error) {
+        console.error('❌ Error loading signing certificate:', error.message);
+        return null;
+    }
+}
+
+function loadSigningPrivateKey() {
+    console.log('🔍 loadSigningPrivateKey() called');
+    try {
+        // Use the samlify private key (no fallback - SAML needs consistent key pair)
+        const keyPath = path.join(__dirname, 'certs', 'samlify-private.pem');
+        console.log('🔍 Checking for private key at:', keyPath);
+        console.log('🔍 File exists:', fs.existsSync(keyPath));
+        
+        if (fs.existsSync(keyPath)) {
+            let key = fs.readFileSync(keyPath, 'utf8');
+            
+            // Clean the private key - remove extra whitespace and ensure proper format
+            key = key.trim();
+            
+            // Ensure it has proper BEGIN/END markers
+            if (!key.includes('-----BEGIN') || !key.includes('-----END')) {
+                console.log('❌ Private key missing BEGIN/END markers');
+                return null;
+            }
+            
+            // Clean up the key format - remove extra spaces and normalize line endings
+            const lines = key.split(/\r?\n/);
+            const cleanedLines = [];
+            
+            for (let line of lines) {
+                // Remove trailing spaces from each line
+                line = line.replace(/\s+$/, '');
+                if (line.length > 0) {
+                    cleanedLines.push(line);
+                }
+            }
+            
+            key = cleanedLines.join('\n');
+            
+            // Ensure it ends with a newline
+            if (!key.endsWith('\n')) {
+                key += '\n';
+            }
+            
+            console.log('✅ Signing private key loaded (samlify-private.pem)');
+            console.log('🔍 Key length:', key.length);
+            console.log('🔍 Key starts with:', key.substring(0, 50));
+            return key;
+        }
+        
+        console.log('❌ SAML signing private key (samlify-private.pem) not found');
+        console.log('   Please ensure the private key file exists in the certs directory');
+        return null;
+    } catch (error) {
+        console.error('❌ Error loading signing private key:', error.message);
+        return null;
+    }
+}
+
+function loadLivePersonCertificate() {
+    try {
+        const certPath = path.join(__dirname, 'certs', 'lpsso2026.pem');
+        if (fs.existsSync(certPath)) {
+            let cert = fs.readFileSync(certPath, 'utf8');
+            
+            // Clean the certificate - remove extra whitespace and ensure proper format
+            cert = cert.trim();
+            
+            // Ensure it has proper BEGIN/END markers
+            if (!cert.includes('-----BEGIN CERTIFICATE-----')) {
+                console.log('❌ LivePerson certificate missing BEGIN marker');
+                return null;
+            }
+            if (!cert.includes('-----END CERTIFICATE-----')) {
+                console.log('❌ LivePerson certificate missing END marker');
+                return null;
+            }
+            
+            // Clean up the certificate format - remove extra spaces and normalize line endings
+            const lines = cert.split(/\r?\n/);
+            const cleanedLines = [];
+            
+            for (let line of lines) {
+                // Remove trailing spaces from each line
+                line = line.replace(/\s+$/, '');
+                if (line.length > 0) {
+                    cleanedLines.push(line);
+                }
+            }
+            
+            cert = cleanedLines.join('\n');
+            
+            // Ensure it ends with a newline
+            if (!cert.endsWith('\n')) {
+                cert += '\n';
+            }
+            
+            console.log('✅ LivePerson encryption certificate loaded');
+            console.log('🔍 Certificate length:', cert.length);
+            console.log('🔍 Certificate starts with:', cert.substring(0, 50));
+            console.log('🔍 Certificate ends with:', cert.substring(cert.length - 50));
+            return cert;
+        } else {
+            console.log('⚠ LivePerson certificate not found at:', certPath);
+            return null;
+        }
+    } catch (error) {
+        console.error('❌ Error loading LivePerson certificate:', error.message);
+        return null;
+    }
+}
