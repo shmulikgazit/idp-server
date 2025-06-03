@@ -555,26 +555,75 @@ app.get('/test', (req, res) => {
                             // Authorization Code Flow with PKCE
                             console.log('Using Authorization Code Flow with PKCE...');
                             console.log('🔐 LivePerson will handle PKCE challenge/verifier generation automatically');
-                            
-                            // For PKCE flow, LivePerson handles the PKCE parameters automatically
-                            // We just need to be ready to receive the code_challenge parameters
-                            // and verify the code_verifier when LivePerson calls /token
-                            
-                            // Note: In a real PKCE implementation, the client would generate:
-                            // 1. code_verifier (cryptographically random string)
-                            // 2. code_challenge = base64url(sha256(code_verifier))
-                            // 3. Send code_challenge with /authorize request
-                            // 4. Send code_verifier with /token request
-                            
-                            // But LivePerson handles this automatically, so we just inform the user
-                            console.log('📋 PKCE flow requires LivePerson to generate challenge/verifier');
                             console.log('📋 Our server will receive code_challenge in /authorize and code_verifier in /token');
-                            console.log('❌ Cannot test PKCE flow directly from browser - requires LivePerson integration');
                             
-                            // For testing purposes, show that PKCE flow is selected but cannot be executed directly
-                            alert('PKCE flow selected. This flow requires LivePerson to handle PKCE parameters automatically. Use the LivePerson chat widget to test this flow.');
-                            callback(null);
+                            // Execute the same authorization code flow - LivePerson will add PKCE parameters automatically
+                            const params = new URLSearchParams({
+                                response_type: 'code',
+                                client_id: 'liveperson-client',
+                                scope: 'openid profile email',
+                                state: 'liveperson-test',
+                                redirect_uri: window.location.origin + '/oauth-callback.html'
+                            });
                             
+                            // Note: LivePerson will automatically add code_challenge and code_challenge_method
+                            
+                            fetch('/authorize?' + params.toString(), {
+                                method: 'GET',
+                                headers: {
+                                    'Accept': 'application/json',
+                                    'Content-Type': 'application/json'
+                                }
+                            })
+                            .then(response => response.json())
+                            .then(data => {
+                                console.log('OAuth Code+PKCE Flow response:', data);
+                                if (data.ssoKey) {
+                                    console.log('✅ Authorization code received from PKCE flow, now exchanging for token...');
+                                    
+                                    // Exchange authorization code for tokens
+                                    const tokenParams = {
+                                        grant_type: 'authorization_code',
+                                        code: data.ssoKey,
+                                        client_id: 'liveperson-client',
+                                        client_secret: '1234567890',
+                                        redirect_uri: window.location.origin + '/oauth-callback.html'
+                                    };
+                                    
+                                    // Note: LivePerson will automatically add code_verifier for PKCE verification
+                                    
+                                    return fetch('/token', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/x-www-form-urlencoded'
+                                        },
+                                        body: new URLSearchParams(tokenParams).toString()
+                                    });
+                                } else if (data.error) {
+                                    throw new Error('OAuth error: ' + data.error + ' - ' + data.error_description);
+                                } else {
+                                    throw new Error('No authorization code in response');
+                                }
+                            })
+                            .then(response => response.json())
+                            .then(tokenData => {
+                                console.log('PKCE Token exchange response:', tokenData);
+                                if (tokenData.id_token) {
+                                    console.log('✅ Calling LivePerson callback with ID token from Code+PKCE Flow');
+                                    console.log('Token format:', tokenData.id_token.split('.').length === 3 ? 'JWT (3 parts)' : tokenData.id_token.split('.').length === 5 ? 'JWE (5 parts)' : 'Unknown');
+                                    callback(tokenData.id_token);
+                                } else if (tokenData.error) {
+                                    console.error('❌ PKCE Token exchange error:', tokenData.error, tokenData.error_description);
+                                    callback(null);
+                                } else {
+                                    console.error('❌ No ID token in PKCE token response');
+                                    callback(null);
+                                }
+                            })
+                            .catch(error => {
+                                console.error('❌ Error in Code+PKCE Flow:', error);
+                                callback(null);
+                            });
                         } else {
                             // Implicit Flow (default)
                             console.log('Using Implicit Flow...');
@@ -977,6 +1026,19 @@ app.get('/authorize', async (req, res) => {
     
     console.log('Authorization request received:', req.query);
     console.log(`Encryption mode: ${encryptionEnabled ? 'ENABLED' : 'DISABLED'}`);
+    
+    // Enhanced PKCE parameter logging for debugging
+    console.log('\n🔍 === DETAILED PARAMETER ANALYSIS ===');
+    console.log('📋 All Query Parameters:');
+    Object.keys(req.query).forEach(key => {
+        console.log(`   ${key}: ${req.query[key]}`);
+    });
+    console.log('🔐 PKCE Parameters Check:');
+    console.log(`   code_challenge: ${code_challenge ? 'PRESENT (' + code_challenge.substring(0, 20) + '...)' : 'MISSING'}`);
+    console.log(`   code_challenge_method: ${code_challenge_method || 'MISSING'}`);
+    console.log(`   Current flow type: ${flowType}`);
+    console.log(`   Should expect PKCE: ${flowType === 'codepkce' ? 'YES' : 'NO'}`);
+    console.log('==========================================\n');
     
     // Check if this is an AJAX request (from lpgetToken)
     const isAjaxRequest = req.headers['x-requested-with'] === 'XMLHttpRequest' || 
