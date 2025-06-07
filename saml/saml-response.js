@@ -1,6 +1,6 @@
-const saml = require('samlify');
-const { loadLivePersonCertificate, encryptSAMLAssertion } = require('./saml-encryption');
-const { getIdentityProvider, getServiceProvider } = require('./saml-core');
+import saml from 'samlify';
+import { loadLivePersonCertificate, encryptSAMLAssertion } from './saml-encryption.js';
+import { getIdentityProvider, getServiceProvider } from './saml-core.js';
 
 /**
  * Creates a SAML response using the samlify library
@@ -371,7 +371,7 @@ async function signSAMLAssertion(assertion, destinationUrl, shouldEncrypt = fals
     };
 }
 
-module.exports = {
+export {
     createSAMLResponse,
     createCustomSAMLResponse,
     signSAMLAssertion,

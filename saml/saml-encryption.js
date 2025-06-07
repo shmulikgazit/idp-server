@@ -1,7 +1,11 @@
-const crypto = require('crypto');
-const { DOMParser, XMLSerializer } = require('xmldom');
-const fs = require('fs');
-const path = require('path');
+import crypto from 'crypto';
+import { DOMParser, XMLSerializer } from 'xmldom';
+import fs from 'fs';
+import path from 'path';
+
+// ES module equivalent of __dirname
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
  * Load LivePerson encryption certificate
@@ -171,7 +175,7 @@ function encryptSAMLAssertion(xml, encryptionCert) {
     }
 }
 
-module.exports = {
+export {
     loadLivePersonCertificate,
     encryptSAMLAssertion
 }; 

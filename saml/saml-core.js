@@ -1,8 +1,12 @@
-const saml = require('samlify');
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-const { loadLivePersonCertificate, encryptSAMLAssertion } = require('./saml-encryption');
+import saml from 'samlify';
+import fs from 'fs';
+import path from 'path';
+import crypto from 'crypto';
+import { loadLivePersonCertificate, encryptSAMLAssertion } from './saml-encryption.js';
+
+// ES module equivalent of __dirname
+import { fileURLToPath } from 'url';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // SAML Identity Provider and Service Provider instances
 let identityProvider = null;
@@ -320,7 +324,7 @@ function getServiceProvider() {
     return serviceProvider;
 }
 
-module.exports = {
+export {
     initializeSAML,
     getIdentityProvider,
     getServiceProvider,
