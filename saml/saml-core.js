@@ -49,7 +49,7 @@ function validateCertificateWithNodeCrypto(certPem, certName) {
 function loadSigningCertificate() {
     console.log('🔍 loadSigningCertificate() called');
     try {
-        const certPath = path.join(__dirname, '..', 'certs', 'samlify-signing-cert.pem');
+        const certPath = path.join(__dirname, '..', 'certs', 'signing-cert.pem');
         console.log('🔍 Checking for certificate at:', certPath);
         console.log('🔍 File exists:', fs.existsSync(certPath));
         
@@ -88,14 +88,14 @@ function loadSigningCertificate() {
                 cert += '\n';
             }
             
-            console.log('✅ Signing certificate loaded (samlify-signing-cert.pem)');
+            console.log('✅ Signing certificate loaded (signing-cert.pem)');
             console.log('🔍 Certificate length:', cert.length);
             console.log('🔍 Certificate starts with:', cert.substring(0, 50));
             console.log('🔍 Certificate ends with:', cert.substring(cert.length - 50));
             return cert;
         }
         
-        console.log('❌ SAML signing certificate (samlify-signing-cert.pem) not found');
+        console.log('❌ SAML signing certificate (signing-cert.pem) not found');
         console.log('   Please ensure the certificate file exists in the certs directory');
         return null;
     } catch (error) {
@@ -111,7 +111,7 @@ function loadSigningCertificate() {
 function loadSigningPrivateKey() {
     console.log('🔍 loadSigningPrivateKey() called');
     try {
-        const keyPath = path.join(__dirname, '..', 'certs', 'samlify-private.pem');
+        const keyPath = path.join(__dirname, '..', 'certs', 'signing-private.pem');
         console.log('🔍 Checking for private key at:', keyPath);
         console.log('🔍 File exists:', fs.existsSync(keyPath));
         
@@ -146,13 +146,13 @@ function loadSigningPrivateKey() {
                 key += '\n';
             }
             
-            console.log('✅ Signing private key loaded (samlify-private.pem)');
+            console.log('✅ Signing private key loaded (signing-private.pem)');
             console.log('🔍 Key length:', key.length);
             console.log('🔍 Key starts with:', key.substring(0, 50));
             return key;
         }
         
-        console.log('❌ SAML signing private key (samlify-private.pem) not found');
+        console.log('❌ SAML signing private key (signing-private.pem) not found');
         console.log('   Please ensure the private key file exists in the certs directory');
         return null;
     } catch (error) {
@@ -172,7 +172,7 @@ function initializeSAML() {
         // Load certificates with debugging
         const signingCert = loadSigningCertificate();
         const signingKey = loadSigningPrivateKey();
-        const encryptionCert = loadLivePersonCertificate();
+        const encryptionCert = loadLivePersonCertificate('der'); // Try DER format first for samlify compatibility
         
         console.log('🔍 Certificate debugging:');
         console.log('  Signing cert type:', typeof signingCert, 'length:', signingCert ? signingCert.length : 'null');
@@ -183,7 +183,11 @@ function initializeSAML() {
             console.log('  Signing cert preview:', signingCert.substring(0, 100) + '...');
         }
         if (encryptionCert) {
-            console.log('  Encryption cert preview:', encryptionCert.substring(0, 100) + '...');
+            if (Buffer.isBuffer(encryptionCert)) {
+                console.log('  Encryption cert preview (hex):', encryptionCert.slice(0, 50).toString('hex') + '...');
+            } else {
+                console.log('  Encryption cert preview:', encryptionCert.substring(0, 100) + '...');
+            }
         }
         
         if (!signingCert || !signingKey) {
@@ -199,9 +203,13 @@ function initializeSAML() {
         }
         
         if (encryptionCert) {
-            const encryptionCertValid = validateCertificateWithNodeCrypto(encryptionCert, 'Encryption Certificate');
-            if (!encryptionCertValid) {
-                console.log('⚠ Encryption certificate failed validation - proceeding without encryption');
+            if (Buffer.isBuffer(encryptionCert)) {
+                console.log('🔍 Skipping Node.js crypto validation for DER certificate (binary format)');
+            } else {
+                const encryptionCertValid = validateCertificateWithNodeCrypto(encryptionCert, 'Encryption Certificate');
+                if (!encryptionCertValid) {
+                    console.log('⚠ Encryption certificate failed validation - proceeding without encryption');
+                }
             }
         }
         
@@ -229,10 +237,8 @@ function initializeSAML() {
         // Create Identity Provider using the correct samlify format
         console.log('🔍 Creating Identity Provider with certificates...');
         
-        identityProvider = saml.IdentityProvider({
-            privateKey: signingKey,
-            isAssertionEncrypted: false,  // Always disable samlify encryption to avoid certificate parsing issues
-            metadata: `<?xml version="1.0"?>
+        // Build IdP metadata with encryption support if available
+        let idpMetadata = `<?xml version="1.0"?>
 <EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.liveperson.com">
   <IDPSSODescriptor WantAuthnRequestsSigned="false" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
     <KeyDescriptor use="signing">
@@ -241,11 +247,43 @@ function initializeSAML() {
           <X509Certificate>${signingCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '')}</X509Certificate>
         </X509Data>
       </KeyInfo>
-    </KeyDescriptor>
+    </KeyDescriptor>`;
+
+        // Add encryption key descriptor if encryption certificate is available
+        if (encryptionCert) {
+            console.log('🔍 Adding encryption certificate to IdP metadata...');
+            
+            let certForIdPMetadata;
+            if (Buffer.isBuffer(encryptionCert)) {
+                // DER format - convert to base64 for XML
+                certForIdPMetadata = encryptionCert.toString('base64');
+                console.log('🔍 Converted DER to base64 for IdP metadata, length:', certForIdPMetadata.length);
+            } else {
+                // PEM format - extract base64 content
+                certForIdPMetadata = encryptionCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '');
+                console.log('🔍 Extracted base64 from PEM for IdP metadata, length:', certForIdPMetadata.length);
+            }
+            
+            idpMetadata += `
+    <KeyDescriptor use="encryption">
+      <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
+        <X509Data>
+          <X509Certificate>${certForIdPMetadata}</X509Certificate>
+        </X509Data>
+      </KeyInfo>
+    </KeyDescriptor>`;
+        }
+
+        idpMetadata += `
     <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</NameIDFormat>
     <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.liveperson.com/sso"/>
   </IDPSSODescriptor>
-</EntityDescriptor>`,
+</EntityDescriptor>`;
+        
+        // Configure IdP with encryption certificate in proper format for samlify
+        const idpConfig = {
+            privateKey: signingKey,
+            metadata: idpMetadata,
             loginResponseTemplate: {
                 context: `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{ID}" Version="2.0" IssueInstant="{IssueInstant}" Destination="{Destination}" InResponseTo="{InResponseTo}">
     <saml:Issuer>{Issuer}</saml:Issuer>
@@ -281,7 +319,17 @@ function initializeSAML() {
     </saml:Assertion>
 </samlp:Response>`
             }
-        });
+        };
+
+        // Do NOT configure encryption at IdP initialization
+        // Encryption should be controlled at runtime via the shouldEncrypt parameter
+        console.log('🔍 Encryption certificate available:', !!encryptionCert);
+        console.log('🔍 Encryption will be controlled at runtime via shouldEncrypt parameter');
+        
+        // Always disable encryption at IdP level - it will be handled per-request
+        idpConfig.isAssertionEncrypted = false;
+
+        identityProvider = saml.IdentityProvider(idpConfig);
         
         console.log('✅ Identity Provider created successfully');
         
@@ -324,11 +372,109 @@ function getServiceProvider() {
     return serviceProvider;
 }
 
+/**
+ * Create a temporary Identity Provider with encryption enabled
+ * @param {Buffer} encryptionCert - Encryption certificate in DER format
+ * @returns {object} Identity Provider with encryption enabled
+ */
+async function createEncryptionEnabledIdP(encryptionCert) {
+    console.log('🔧 Creating encryption-enabled Identity Provider...');
+    
+    // Load the existing signing certificates
+    const signingCert = loadSigningCertificate();
+    const signingKey = loadSigningPrivateKey();
+    
+    if (!signingCert || !signingKey) {
+        throw new Error('Signing certificate or private key not available - required for SAML');
+    }
+    
+    // Convert encryption cert to base64 for metadata
+    let certForMetadata;
+    if (Buffer.isBuffer(encryptionCert)) {
+        certForMetadata = encryptionCert.toString('base64');
+    } else {
+        // If it's PEM, extract base64 content
+        certForMetadata = encryptionCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '');
+    }
+    
+    // Build IdP metadata with encryption certificate
+    const idpMetadata = `<?xml version="1.0"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.liveperson.com">
+  <IDPSSODescriptor WantAuthnRequestsSigned="false" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing">
+      <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
+        <X509Data>
+          <X509Certificate>${signingCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '')}</X509Certificate>
+        </X509Data>
+      </KeyInfo>
+    </KeyDescriptor>
+    <KeyDescriptor use="encryption">
+      <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
+        <X509Data>
+          <X509Certificate>${certForMetadata}</X509Certificate>
+        </X509Data>
+      </KeyInfo>
+    </KeyDescriptor>
+    <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</NameIDFormat>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.liveperson.com/sso"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>`;
+    
+    // Configure IdP with encryption enabled
+    const idpConfig = {
+        privateKey: signingKey,
+        metadata: idpMetadata,
+        isAssertionEncrypted: true, // Enable encryption!
+        loginResponseTemplate: {
+            context: `<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{ID}" Version="2.0" IssueInstant="{IssueInstant}" Destination="{Destination}" InResponseTo="{InResponseTo}">
+    <saml:Issuer>{Issuer}</saml:Issuer>
+    <samlp:Status>
+        <samlp:StatusCode Value="{StatusCode}"/>
+    </samlp:Status>
+    <saml:Assertion xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" ID="{AssertionID}" Version="2.0" IssueInstant="{IssueInstant}">
+        <saml:Issuer>{Issuer}</saml:Issuer>
+        <saml:Subject>
+            <saml:NameID SPNameQualifier="{SPNameQualifier}" Format="{NameIDFormat}">{NameID}</saml:NameID>
+            <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
+                <saml:SubjectConfirmationData NotOnOrAfter="{SubjectConfirmationDataNotOnOrAfter}" Recipient="{SubjectConfirmationDataRecipient}" InResponseTo="{InResponseTo}"/>
+            </saml:SubjectConfirmation>
+        </saml:Subject>
+        <saml:Conditions NotBefore="{ConditionsNotBefore}" NotOnOrAfter="{ConditionsNotOnOrAfter}">
+            <saml:AudienceRestriction>
+                <saml:Audience>{Audience}</saml:Audience>
+            </saml:AudienceRestriction>
+        </saml:Conditions>
+        <saml:AttributeStatement>
+            <saml:Attribute Name="loginName">
+                <saml:AttributeValue xsi:type="xs:string">{loginName}</saml:AttributeValue>
+            </saml:Attribute>
+            <saml:Attribute Name="siteId">
+                <saml:AttributeValue xsi:type="xs:string">{siteId}</saml:AttributeValue>
+            </saml:Attribute>
+        </saml:AttributeStatement>
+        <saml:AuthnStatement AuthnInstant="{AuthnInstant}" SessionIndex="{SessionIndex}">
+            <saml:AuthnContext>
+                <saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:unspecified</saml:AuthnContextClassRef>
+            </saml:AuthnContext>
+        </saml:AuthnStatement>
+    </saml:Assertion>
+</samlp:Response>`
+        }
+    };
+    
+    // Create the encryption-enabled Identity Provider
+    const encryptionIdP = saml.IdentityProvider(idpConfig);
+    
+    console.log('✅ Encryption-enabled Identity Provider created');
+    return encryptionIdP;
+}
+
 export {
     initializeSAML,
     getIdentityProvider,
     getServiceProvider,
     validateCertificateWithNodeCrypto,
     loadSigningCertificate,
-    loadSigningPrivateKey
+    loadSigningPrivateKey,
+    createEncryptionEnabledIdP
 }; 

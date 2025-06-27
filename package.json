@@ -1,7 +1,7 @@
 {
   "name": "liveperson-idp-server",
-  "version": "1.0.0",
-  "description": "Local IDP server for testing LivePerson consumer authentication with JWE encryption",
+  "version": "2.0.0",
+  "description": "Comprehensive Identity Provider for LivePerson authentication testing with OAuth 2.0, OpenID Connect (OIDC), and SAML 2.0 support",
   "main": "server.js",
   "type": "module",
   "scripts": {
@@ -11,12 +11,14 @@
     "test": "node test-server.js"
   },
   "dependencies": {
+    "@node-saml/node-saml": "^5.0.1",
     "axios": "^1.9.0",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "jose": "^6.0.11",
     "jsonwebtoken": "^8.5.1",
     "morgan": "^1.10.0",
+    "node-fetch": "^3.3.2",
     "node-jose": "^2.2.0",
     "node-rsa": "^1.1.1",
     "samlify": "^2.10.0",
@@ -31,9 +33,17 @@
     "liveperson",
     "idp",
     "oauth",
-    "openid",
+    "openid-connect",
+    "oidc", 
+    "saml",
+    "agent-sso",
+    "consumer-auth",
+    "auth0",
+    "denver",
     "jwe",
-    "jwt"
+    "jwt",
+    "authentication",
+    "identity-provider"
   ],
   "author": "",
   "license": "MIT"

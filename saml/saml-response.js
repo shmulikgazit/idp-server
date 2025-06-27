@@ -1,73 +1,147 @@
 import saml from 'samlify';
 import { loadLivePersonCertificate, encryptSAMLAssertion } from './saml-encryption.js';
 import { getIdentityProvider, getServiceProvider } from './saml-core.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Creates a SAML response using the samlify library
- * @param {string} siteId - LivePerson site ID
+ * Main function to create SAML response with multiple implementation options
+ * @param {string} siteId - LivePerson site ID  
  * @param {string} loginName - User login name
  * @param {string} destinationUrl - SAML destination URL
  * @param {boolean} shouldEncrypt - Whether to encrypt the assertion
- * @returns {Object} SAML response object with samlResponse and method
+ * @param {string} method - Implementation method ('samlify', 'node-saml', 'auto')
+ * @param {string} encryptionCertName - Name of encryption certificate to use
+ * @returns {Promise<Object>} SAML response result
  */
-async function createSAMLResponse(siteId, loginName, destinationUrl, shouldEncrypt = false) {
-    console.log('🔧 Creating SAML Response with samlify library...');
-    console.log('📍 Destination URL:', destinationUrl);
-    console.log('🔐 Encryption requested:', shouldEncrypt);
-    
-    const identityProvider = getIdentityProvider();
-    const serviceProvider = getServiceProvider();
-    
-    if (!identityProvider || !serviceProvider) {
-        throw new Error('SAML not properly initialized - standard library required');
+async function createSAMLResponse(siteId, loginName, destinationUrl, shouldEncrypt = false, method = 'auto', encryptionCertName = null) {
+    console.log('🔧 createSAMLResponse called with parameters:');
+    console.log(`📧 User: ${loginName}`);
+    console.log(`🏢 Site ID: ${siteId}`);
+    console.log(`🎯 Destination: ${destinationUrl}`);
+    console.log(`🔒 Encryption: ${shouldEncrypt ? 'ENABLED' : 'DISABLED'}`);
+    console.log(`🛠️ Method: ${method}`);
+
+    // Auto-select samlify as it's designed for IdP operations
+    if (method === 'auto') {
+        method = 'samlify';
+        console.log('🤖 Auto-selected method: samlify (IdP-focused library)');
     }
-    
-    // Update service provider ACS URL dynamically
-    const spConfig = serviceProvider.getMetadata();
-    spConfig.assertionConsumerService = [{
-        Binding: 'urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST',
-        Location: destinationUrl
-    }];
-    
-    // Create updated service provider with correct destination
-    const encryptionCert = shouldEncrypt ? loadLivePersonCertificate() : undefined;
-    console.log('🔍 Encryption certificate loaded:', !!encryptionCert);
-    
-    // Build dynamic SP metadata XML with encryption certificate if needed
-    const dynamicSpMetadataXml = buildDynamicServiceProviderMetadata(destinationUrl, shouldEncrypt, encryptionCert);
-    
-    const dynamicSP = saml.ServiceProvider({
-        metadata: dynamicSpMetadataXml
-    });
-    
-    console.log('🔍 Service Provider created with encryption certificate in metadata:', shouldEncrypt && !!encryptionCert);
-    
-    // Create user attributes
-    const user = {
-        nameID: loginName,
-        nameIDFormat: 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified',
-        attributes: {
-            'loginName': loginName,
-            'siteId': siteId
+
+    try {
+        switch (method) {
+            case 'samlify':
+                console.log('🔧 Using samlify implementation (IdP-focused)...');
+                return await createSamlifyResponse(siteId, loginName, destinationUrl, shouldEncrypt, encryptionCertName);
+                
+            case 'node-saml':
+                console.log('⚠️ node-saml method is disabled (SP-focused library, not suitable for IdP operations)');
+                throw new Error('node-saml method is disabled - use samlify for IdP operations');
+                
+            default:
+                console.log(`❌ Unknown method ${method}, defaulting to samlify`);
+                return await createSamlifyResponse(siteId, loginName, destinationUrl, shouldEncrypt, encryptionCertName);
         }
+    } catch (error) {
+        console.error(`❌ Error creating SAML response with method ${method}:`, error.message);
+        throw error;
+    }
+}
+
+/**
+ * Create SAML response using samlify (original implementation)
+ * @param {string} siteId - LivePerson site ID
+ * @param {string} loginName - User login name  
+ * @param {string} destinationUrl - SAML destination URL
+ * @param {boolean} shouldEncrypt - Whether to encrypt the assertion
+ * @param {string} encryptionCertName - Name of encryption certificate to use
+ * @returns {Promise<Object>} SAML response object
+ */
+async function createSamlifyResponse(siteId, loginName, destinationUrl, shouldEncrypt = false, encryptionCertName = null, inResponseTo = null) {
+    const identityProvider = getIdentityProvider();
+    if (!identityProvider) {
+        throw new Error('Identity Provider not initialized - ensure SAML initialization was successful');
+    }
+
+    // Load LivePerson's encryption certificate if encryption is requested
+    let encryptionCert = null;
+    if (shouldEncrypt) {
+        // Import runtime config to get current certificate selection
+        const { runtimeConfig } = await import('../config/config.js');
+        const certName = encryptionCertName || runtimeConfig.encryptionCert.name;
+        
+        console.log(`🔍 Loading encryption certificate: ${certName}`);
+        
+        // Try DER format first (better compatibility with samlify)
+        encryptionCert = loadLivePersonCertificate('der', certName);
+        if (!encryptionCert) {
+            console.log('⚠️ DER certificate not available, trying PEM format...');
+            encryptionCert = loadLivePersonCertificate('pem', certName);
+        }
+        
+        if (!encryptionCert) {
+            console.log(`⚠️ Encryption requested but certificate '${certName}' not available - proceeding without encryption`);
+            shouldEncrypt = false;
+        } else {
+            console.log('🔍 Certificate format being used:', Buffer.isBuffer(encryptionCert) ? 'DER (binary)' : 'PEM (text)');
+        }
+    }
+
+    // Build dynamic Service Provider with encryption certificate if needed
+    const dynamicSpMetadataXml = buildDynamicServiceProviderMetadata(destinationUrl, shouldEncrypt, encryptionCert);
+    console.log('🔍 Dynamic SP metadata includes encryption KeyDescriptor:', dynamicSpMetadataXml.includes('use="encryption"'));
+    
+    // Import the SP dynamically (in-memory, not persistent)
+    const { ServiceProvider } = await import('samlify');
+    
+    // Create SP configuration - encryption is handled by IdP, not SP
+    const spConfig = { metadata: dynamicSpMetadataXml };
+    const dynamicSP = ServiceProvider(spConfig);
+
+    // Create user context
+    const user = {
+        loginName: loginName,
+        siteId: siteId
     };
-    
-    console.log('👤 User object for SAML generation:', JSON.stringify(user, null, 2));
-    
+
     // Create the customTagReplacement function
-    const customTagReplacementFunction = createCustomTagReplacementFunction(destinationUrl, loginName, siteId);
+    const customTagReplacementFunction = createCustomTagReplacementFunction(destinationUrl, loginName, siteId, inResponseTo);
 
     // Call createLoginResponse with correct parameter order
     console.log('🔍 Calling samlify createLoginResponse...');
-    const responseResult = await identityProvider.createLoginResponse(
-        dynamicSP,
-        null,
-        'post',
-        user,
-        customTagReplacementFunction,  // 5th parameter: customTagReplacement function
-        shouldEncrypt,                 // 6th parameter: encryptThenSign (boolean)
-        null                          // 7th parameter: relayState
-    );
+    console.log('🔍 Dynamic SP entity ID:', dynamicSP.entityMeta.getEntityID());
+    console.log('🔍 Encryption enabled:', shouldEncrypt);
+    
+    let responseResult;
+    if (shouldEncrypt && encryptionCert) {
+        // For encryption, we need to create a temporary IdP with encryption enabled
+        console.log('🔍 Creating temporary IdP with encryption enabled for Denver SSO...');
+        const { createEncryptionEnabledIdP } = await import('../saml/saml-core.js');
+        const encryptionIdP = await createEncryptionEnabledIdP(encryptionCert);
+        
+        responseResult = await encryptionIdP.createLoginResponse(
+            dynamicSP,
+            null,
+            'post',
+            user,
+            customTagReplacementFunction,  // 5th parameter: customTagReplacement function
+            true,                          // 6th parameter: Force encryption
+            null                          // 7th parameter: relayState
+        );
+    } else {
+        responseResult = await identityProvider.createLoginResponse(
+            dynamicSP,
+            null,
+            'post',
+            user,
+            customTagReplacementFunction,  // 5th parameter: customTagReplacement function
+            false,                         // 6th parameter: No encryption
+            null                          // 7th parameter: relayState
+        );
+    }
     
     console.log('🔍 Samlify createLoginResponse completed');
     console.log('🔍 Response result type:', typeof responseResult);
@@ -99,17 +173,29 @@ async function createSAMLResponse(siteId, loginName, destinationUrl, shouldEncry
  */
 function buildDynamicServiceProviderMetadata(destinationUrl, shouldEncrypt, encryptionCert) {
     let dynamicSpMetadataXml = `<?xml version="1.0"?>
-<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="LEna2">
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="SAML-81785735-MyIdPSAML">
   <SPSSODescriptor AuthnRequestsSigned="false" WantAssertionsSigned="true" protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">`;
 
     // Add encryption KeyDescriptor if encryption is requested
     if (shouldEncrypt && encryptionCert) {
         console.log('🔍 Adding encryption certificate to dynamic SP metadata...');
+        
+        let certForMetadata;
+        if (Buffer.isBuffer(encryptionCert)) {
+            // DER format - convert to base64 for XML
+            certForMetadata = encryptionCert.toString('base64');
+            console.log('🔍 Converted DER to base64 for metadata, length:', certForMetadata.length);
+        } else {
+            // PEM format - extract base64 content
+            certForMetadata = encryptionCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '');
+            console.log('🔍 Extracted base64 from PEM for metadata, length:', certForMetadata.length);
+        }
+        
         dynamicSpMetadataXml += `
     <KeyDescriptor use="encryption">
       <KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">
         <X509Data>
-          <X509Certificate>${encryptionCert.replace(/-----BEGIN CERTIFICATE-----\s*|\s*-----END CERTIFICATE-----/g, '').replace(/\s/g, '')}</X509Certificate>
+          <X509Certificate>${certForMetadata}</X509Certificate>
         </X509Data>
       </KeyInfo>
     </KeyDescriptor>`;
@@ -133,9 +219,18 @@ function buildDynamicServiceProviderMetadata(destinationUrl, shouldEncrypt, encr
  * @param {string} siteId - LivePerson site ID
  * @returns {Function} Custom tag replacement function
  */
-function createCustomTagReplacementFunction(destinationUrl, loginName, siteId) {
+function createCustomTagReplacementFunction(destinationUrl, loginName, siteId, inResponseTo = null) {
     return (template) => {
+        console.log('🔧 customTagReplacement called with template:', typeof template);
+        
+        // Check if template is null or undefined
+        if (!template) {
+            console.error('❌ Template is null or undefined in customTagReplacement');
+            throw new Error('Template parameter is null or undefined');
+        }
+        
         console.log('🔧 customTagReplacement called with template length:', template.length);
+        console.log('🔧 InResponseTo value:', inResponseTo);
         
         // Replace all the template variables
         let processedTemplate = template
@@ -149,18 +244,40 @@ function createCustomTagReplacementFunction(destinationUrl, loginName, siteId) {
             .replace(/{NameID}/g, loginName)
             .replace(/{SubjectConfirmationDataNotOnOrAfter}/g, new Date(Date.now() + 5 * 60 * 1000).toISOString())
             .replace(/{SubjectRecipient}/g, destinationUrl)
-            .replace(/{InResponseTo}/g, '')
+            .replace(/{SubjectConfirmationDataRecipient}/g, destinationUrl)
+            .replace(/{SPNameQualifier}/g, '')
             .replace(/{ConditionsNotBefore}/g, new Date().toISOString())
             .replace(/{ConditionsNotOnOrAfter}/g, new Date(Date.now() + 5 * 60 * 1000).toISOString())
-            .replace(/{Audience}/g, 'LEna2')
+            .replace(/{Audience}/g, 'SAML-81785735-MyIdPSAML')
             .replace(/{AuthnInstant}/g, new Date().toISOString())
             .replace(/{SessionIndex}/g, 'session_' + Math.random().toString(36).substr(2, 9))
             .replace(/{LoginName}/g, loginName)
-            .replace(/{SiteId}/g, siteId);
+            .replace(/{SiteId}/g, siteId)
+            .replace(/{loginName}/g, loginName)
+            .replace(/{siteId}/g, siteId);
+            
+        // Handle InResponseTo properly
+        if (inResponseTo) {
+            console.log('🔧 Setting InResponseTo to:', inResponseTo);
+            processedTemplate = processedTemplate.replace(/{InResponseTo}/g, inResponseTo);
+        } else {
+            console.log('🔧 Removing InResponseTo attributes (no value provided)');
+            // Remove InResponseTo attributes entirely if no value
+            processedTemplate = processedTemplate
+                .replace(/\s+InResponseTo=""/g, '')
+                .replace(/\s+InResponseTo="{InResponseTo}"/g, '')
+                .replace(/\s+InResponseTo="[^"]*"/g, '');
+        }
+        
+        // Clean up other empty attributes
+        processedTemplate = processedTemplate
+            .replace(/\s+SPNameQualifier=""/g, '')
+            .replace(/\s+SPNameQualifier="{SPNameQualifier}"/g, '');
         
         console.log('✅ Template processed, contains LoginName:', processedTemplate.includes(loginName));
         console.log('✅ Template processed, contains SiteId:', processedTemplate.includes(siteId));
         console.log('✅ Template processed, contains AttributeStatement:', processedTemplate.includes('AttributeStatement'));
+        console.log('✅ Template processed, InResponseTo handled:', inResponseTo ? `set to ${inResponseTo}` : 'removed');
         
         return {
             id: 'custom_response_id_' + Math.random().toString(36).substr(2, 9),
@@ -221,6 +338,10 @@ function processSAMLResponse(samlResponse) {
         }
     }
     
+    // NOTE: Cannot add InclusiveNamespaces post-signing as it would invalidate the signature
+    // The signature is calculated before any XML modifications can be made
+    // This is a limitation of the samlify library - it doesn't expose canonicalization configuration
+    
     // Debug: Check for attribute statements in the XML
     console.log('🔍 Checking for AttributeStatement in SAML...');
     console.log('🔍 Contains AttributeStatement:', actualXmlResponse.includes('AttributeStatement'));
@@ -231,7 +352,6 @@ function processSAMLResponse(samlResponse) {
     console.log('🔍 Checking for encryption in SAML...');
     console.log('🔍 Contains EncryptedAssertion:', actualXmlResponse.includes('EncryptedAssertion'));
     console.log('🔍 Contains EncryptedData:', actualXmlResponse.includes('EncryptedData'));
-    console.log('🔍 Contains CipherValue:', actualXmlResponse.includes('CipherValue'));
     
     return actualXmlResponse;
 }
@@ -286,7 +406,7 @@ async function createCustomSAMLResponse(siteId, loginName, destinationUrl, shoul
         </saml2:Subject>
         <saml2:Conditions NotBefore="${notBefore}" NotOnOrAfter="${notOnOrAfter}">
             <saml2:AudienceRestriction>
-                <saml2:Audience>LEna2</saml2:Audience>
+                <saml2:Audience>SAML-81785735-MyIdPSAML</saml2:Audience>
             </saml2:AudienceRestriction>
         </saml2:Conditions>
         <saml2:AuthnStatement AuthnInstant="${issueInstant}" SessionIndex="${sessionIndex}">
@@ -324,9 +444,10 @@ async function createCustomSAMLResponse(siteId, loginName, destinationUrl, shoul
  * @param {Object} assertion - Assertion data with siteId and loginName
  * @param {string} destinationUrl - SAML destination URL
  * @param {boolean} shouldEncrypt - Whether to encrypt the assertion
+ * @param {string} encryptionCertName - Name of encryption certificate to use
  * @returns {Object} Final SAML response with XML, base64, and method
  */
-async function signSAMLAssertion(assertion, destinationUrl, shouldEncrypt = false) {
+async function signSAMLAssertion(assertion, destinationUrl, shouldEncrypt = false, encryptionCertName = null) {
     console.log('🔐 Creating SAML assertion with samlify...');
     console.log('📍 Destination URL:', destinationUrl);
     console.log('🔐 Encryption requested:', shouldEncrypt);
@@ -336,43 +457,21 @@ async function signSAMLAssertion(assertion, destinationUrl, shouldEncrypt = fals
         assertion.siteId || 'a41244303', 
         assertion.loginName || 'testuser', 
         destinationUrl, 
-        false  // Always false since we handle encryption manually
+        shouldEncrypt,  // Pass encryption setting to use proper certificate
+        'samlify',      // Use samlify method
+        encryptionCertName  // Pass certificate name
     );
     
-    let finalXml = result.samlResponse;
-    let method = result.method;
-    
-    // If encryption is requested, encrypt the SAML manually
-    if (shouldEncrypt) {
-        console.log('🔍 Encryption requested - checking for encryption certificate...');
-        const encryptionCert = loadLivePersonCertificate();
-        console.log('🔍 Encryption certificate loaded:', !!encryptionCert);
-        if (encryptionCert) {
-            console.log('🔐 Applying manual encryption to SAML assertion...');
-            try {
-                finalXml = encryptSAMLAssertion(finalXml, encryptionCert);
-                method = method.replace('SIGNED', 'SIGNED_ENCRYPTED');
-                console.log('✅ Manual encryption applied successfully');
-            } catch (encryptError) {
-                console.error('❌ Manual encryption failed:', encryptError.message);
-                console.log('🔄 Continuing with unencrypted SAML');
-            }
-        } else {
-            console.log('⚠ Encryption requested but no encryption certificate available');
-        }
-    } else {
-        console.log('🔍 Encryption not requested (shouldEncrypt = false)');
-    }
-                
     return {
-        xml: finalXml,
-        base64: Buffer.from(finalXml).toString('base64'),
-        method: method
+        xml: result.samlResponse,
+        base64: Buffer.from(result.samlResponse).toString('base64'),
+        method: result.method
     };
 }
 
 export {
     createSAMLResponse,
+    createSamlifyResponse,
     createCustomSAMLResponse,
     signSAMLAssertion,
     buildDynamicServiceProviderMetadata,

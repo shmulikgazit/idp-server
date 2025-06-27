@@ -67,4 +67,18 @@ jspm_packages/
 .Spotlight-V100
 .Trashes
 ehthumbs.db
-Thumbs.db 
+Thumbs.db
+
+# Cursor IDE
+.cursor/
+
+# ngrok artifacts
+*.ngrok.exe.old
+.ngrok2/
+.ngrok/
+
+# Test artifacts and backups
+test-*
+*-backup*
+*-original*
+*.temp

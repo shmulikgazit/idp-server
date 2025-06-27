@@ -1,8 +1,101 @@
 // Request Logging Middleware for LivePerson IDP Server
 import config from '../config/config.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const logFile = path.join(__dirname, '..', 'debug.log');
 
 // Request logging array - shared storage for request logs
 export const requestLogs = [];
+
+// Create a marker for easy log navigation
+let markerCount = 0;
+
+/**
+ * Write a marker to the log file for easy navigation
+ * @param {string} description - Description of what you're testing
+ */
+function logMarker(description = 'Testing checkpoint') {
+    markerCount++;
+    const marker = `\n${'='.repeat(80)}\n🔖 MARKER ${markerCount}: ${description}\n🕐 ${new Date().toISOString()}\n${'='.repeat(80)}\n`;
+    
+    fs.appendFileSync(logFile, marker);
+    console.log(`🔖 MARKER ${markerCount}: ${description}`);
+}
+
+/**
+ * Enhanced console.log that also writes to file
+ */
+function logToFile(...args) {
+    const timestamp = new Date().toISOString();
+    const message = args.map(arg => 
+        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+    ).join(' ');
+    
+    const logEntry = `[${timestamp}] ${message}\n`;
+    
+    // Write to file
+    fs.appendFileSync(logFile, logEntry);
+    
+    // Also log to console
+    console.log(...args);
+}
+
+/**
+ * Enhanced console.error that also writes to file
+ */
+function errorToFile(...args) {
+    const timestamp = new Date().toISOString();
+    const message = args.map(arg => 
+        typeof arg === 'object' ? JSON.stringify(arg, null, 2) : String(arg)
+    ).join(' ');
+    
+    const logEntry = `[${timestamp}] ERROR: ${message}\n`;
+    
+    // Write to file
+    fs.appendFileSync(logFile, logEntry);
+    
+    // Also log to console
+    console.error(...args);
+}
+
+/**
+ * Clear the log file
+ */
+function clearLog() {
+    fs.writeFileSync(logFile, `Debug log started at ${new Date().toISOString()}\n${'='.repeat(80)}\n`);
+    markerCount = 0;
+    console.log('🗑️ Debug log cleared');
+}
+
+/**
+ * Get the last N lines from the log file
+ * @param {number} lines - Number of lines to get (default 50)
+ * @returns {string} Last N lines
+ */
+function getLogTail(lines = 50) {
+    try {
+        const content = fs.readFileSync(logFile, 'utf8');
+        const allLines = content.split('\n');
+        return allLines.slice(-lines).join('\n');
+    } catch (error) {
+        return 'Log file not found or empty';
+    }
+}
+
+/**
+ * Initialize logging middleware
+ */
+function initializeLogging() {
+    // Create initial log entry
+    if (!fs.existsSync(logFile)) {
+        clearLog();
+    } else {
+        logMarker('Server restart');
+    }
+}
 
 /**
  * Parse Authorization header to extract client credentials
@@ -167,4 +260,13 @@ export function getRequestLogs() {
  */
 export function clearRequestLogs() {
     requestLogs.length = 0;
-} 
+}
+
+export {
+    logToFile,
+    errorToFile,
+    logMarker,
+    clearLog,
+    getLogTail,
+    initializeLogging
+}; 

@@ -102,6 +102,7 @@ router.get('/authorize', async (req, res) => {
         client_id, 
         redirect_uri, 
         response_type, 
+        response_mode,
         scope, 
         state, 
         nonce,
@@ -126,6 +127,9 @@ router.get('/authorize', async (req, res) => {
     console.log(`   code_challenge_method: ${code_challenge_method || 'MISSING'}`);
     console.log(`   Current flow type: ${flowType}`);
     console.log(`   Should expect PKCE: ${flowType === 'codepkce' ? 'YES' : 'NO'}`);
+    console.log('📤 Response Mode Check:');
+    console.log(`   response_mode: ${response_mode || 'MISSING (defaults to fragment)'}`);
+    console.log(`   LivePerson expects: form_post for OIDC integrations`);
     console.log('==========================================\n');
     
     // Check if this is an AJAX request (from lpgetToken)
@@ -166,37 +170,35 @@ router.get('/authorize', async (req, res) => {
     try {
         // Create user payload
         const now = Math.floor(Date.now() / 1000);
-        const issuer = `${config.jwt.issuerBase}/${flowType}`;
+        
+        // For OIDC integrations, use the base URL as issuer (without flow suffix)
+        // This matches what LivePerson expects in the discovery document
+        const forwardedHost = req.get('x-forwarded-host') || req.get('host');
+        const forwardedProto = req.get('x-forwarded-proto') || req.get('x-forwarded-protocol');
+        
+        // Use forwarded protocol if available, otherwise force HTTPS for ngrok
+        const protocol = forwardedProto || (forwardedHost && forwardedHost.includes('ngrok') ? 'https' : req.protocol);
+        const host = forwardedHost || req.get('host');
+        
+        const issuer = `${protocol}://${host}`;
+        
+        console.log('🔍 Issuer Construction:');
+        console.log(`   - Original protocol: ${req.protocol}`);
+        console.log(`   - Forwarded protocol: ${forwardedProto || 'None'}`);
+        console.log(`   - Final protocol: ${protocol}`);
+        console.log(`   - Host: ${host}`);
+        console.log(`   - Final issuer: ${issuer}`);
         
         const payload = {
-            // iss will be added by createToken function
-            sub: config.livePerson.testUser.id,
+            // Core OIDC claims
+            sub: 'admin',  // Agent username
             aud: client_id || config.oauth.clientId,
             exp: now + 3600,
             iat: now,
             nonce: nonce,
             
-            // Custom claims for LivePerson
-            email: config.livePerson.testUser.email,
-            name: config.livePerson.testUser.name,
-            given_name: 'Test',
-            family_name: 'User',
-            phone_number: config.livePerson.testUser.phone,
-            
-            // LivePerson specific claims
-            lp_sdes: {
-                customerInfo: {
-                    customerId: 'test-customer-123',
-                    customerType: 'premium',
-                    balance: 1500.00,
-                    accountNumber: 'ACC-789456123'
-                },
-                personalInfo: {
-                    name: config.livePerson.testUser.name,
-                    email: config.livePerson.testUser.email,
-                    phone: config.livePerson.testUser.phone
-                }
-            }
+            // LivePerson Agent SSO specific claim
+            loginName: 'admin'  // Required for agent authentication
         };
         
         console.log(`🔄 Using ${flowType.toUpperCase()} flow with issuer: ${issuer}`);
@@ -242,15 +244,16 @@ router.get('/authorize', async (req, res) => {
                 // Return code directly for AJAX requests
                 console.log('Authorization Code Flow - Returning code directly (AJAX)');
                 res.json({
-                    ssoKey: code
+                    code: code  // Use standard OAuth 2.0 'code' field
                 });
             } else {
-                // LivePerson expects callback with ssoKey parameter
+                // Standard OAuth 2.0 authorization code flow response
                 const redirectUrl = new URL(redirect_uri);
-                redirectUrl.searchParams.set('ssoKey', code); // LivePerson uses ssoKey instead of code
+                redirectUrl.searchParams.set('code', code); // Use standard OAuth 2.0 'code' parameter
                 if (state) redirectUrl.searchParams.set('state', state);
                 
                 console.log(`Authorization Code Flow - Redirecting to: ${redirectUrl.toString()}`);
+                console.log(`📋 Using standard OAuth 2.0 'code' parameter instead of 'ssoKey'`);
                 res.redirect(redirectUrl.toString());
             }
             
@@ -267,12 +270,53 @@ router.get('/authorize', async (req, res) => {
                     state: state,
                     expires_in: 3600
                 });
+            } else if (response_mode === 'form_post') {
+                // Form POST mode for LivePerson OIDC integration
+                console.log('✅ Implicit Flow - Using form_post response mode for LivePerson');
+                console.log('📤 Posting to callback URL:', redirect_uri);
+                
+                // Generate HTML form that auto-submits to the callback URL
+                const formHtml = `
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Authentication Response</title>
+                    <style>
+                        body { font-family: Arial, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: #f5f5f5; }
+                        .container { text-align: center; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 1rem; }
+                        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="spinner"></div>
+                        <h3>Authentication Successful</h3>
+                        <p>Redirecting to LivePerson...</p>
+                        <form id="oidcForm" action="${redirect_uri}" method="POST">
+                            <input type="hidden" name="id_token" value="${idToken}" />
+                            <input type="hidden" name="token_type" value="Bearer" />
+                            <input type="hidden" name="state" value="${state || ''}" />
+                        </form>
+                    </div>
+                    <script>
+                        console.log('🔄 OIDC Form POST: Submitting authentication response to LivePerson');
+                        console.log('📍 Target URL:', '${redirect_uri}');
+                        console.log('🎫 Token length:', ${idToken.length});
+                        console.log('🎯 State:', '${state || 'None'}');
+                        document.getElementById('oidcForm').submit();
+                    </script>
+                </body>
+                </html>
+                `;
+                
+                res.send(formHtml);
             } else {
-                // Traditional redirect for browser requests
+                // Traditional fragment redirect for browser requests (default)
                 const redirectUrl = new URL(redirect_uri);
                 redirectUrl.hash = `id_token=${idToken}&token_type=Bearer&state=${state || ''}`;
                 
-                console.log('Implicit Flow - Redirecting with tokens');
+                console.log('Implicit Flow - Using fragment redirect (default)');
                 res.redirect(redirectUrl.toString());
             }
         }
@@ -450,6 +494,9 @@ router.post('/token', async (req, res) => {
         console.log(`🎯 ID Token Format: ${idToken.split('.').length === 3 ? 'JWT (3 parts)' : idToken.split('.').length === 5 ? 'JWE (5 parts)' : 'Unknown format'}`);
         console.log(`📤 Sending response to LivePerson IdP`);
         
+        // Add ngrok bypass header for token endpoint requests
+        res.set('ngrok-skip-browser-warning', 'true');
+        
         res.json(response);
         
     } catch (error) {
@@ -540,6 +587,44 @@ router.post('/token-direct', async (req, res) => {
         res.status(500).json({
             error: 'server_error',
             error_description: 'Failed to create tokens'
+        });
+    }
+});
+
+// UserInfo endpoint (for OpenID Connect)
+router.get('/userinfo', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({
+            error: 'invalid_token',
+            error_description: 'Bearer token required'
+        });
+    }
+    
+    const token = authHeader.substring(7);
+    
+    try {
+        // For simplicity, we'll return test user info
+        // In production, you'd validate the token and extract user info
+        const userInfo = {
+            sub: config.livePerson.testUser.id,
+            name: config.livePerson.testUser.name,
+            given_name: 'Test',
+            family_name: 'User', 
+            email: config.livePerson.testUser.email,
+            phone_number: config.livePerson.testUser.phone,
+            email_verified: true
+        };
+        
+        console.log('👤 UserInfo endpoint called, returning test user');
+        res.json(userInfo);
+        
+    } catch (error) {
+        console.error('Error in userinfo endpoint:', error);
+        res.status(500).json({
+            error: 'server_error',
+            error_description: 'Failed to retrieve user info'
         });
     }
 });

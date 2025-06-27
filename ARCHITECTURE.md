@@ -2,7 +2,7 @@
 
 ## Overview
 
-The LivePerson IDP Server is a comprehensive Identity Provider server that has been refactored from a single monolithic file into a well-organized, modular architecture. The server supports OAuth 2.0, SAML 2.0, and provides seamless integration with LivePerson's platform.
+The LivePerson IDP Server is a comprehensive Identity Provider server that supports multiple authentication protocols for LivePerson integration testing. The server has evolved from a monolithic architecture into a well-organized, modular system supporting OAuth 2.0, OpenID Connect (OIDC), and SAML 2.0 with seamless LivePerson platform integration.
 
 ## 🏗️ Architecture
 
@@ -10,267 +10,286 @@ The LivePerson IDP Server is a comprehensive Identity Provider server that has b
 
 ```
 idp-server/
-├── server.js                 # Main server entry point (270 lines)
+├── server.js                 # Main server with OIDC discovery (320 lines)
 ├── config/
-│   └── config.js             # Centralized configuration
+│   └── config.js             # Centralized configuration management
 ├── utils/
-│   ├── pkce.js               # PKCE utilities
-│   └── jwt.js                # JWT/JWE utilities
+│   ├── pkce.js               # PKCE utilities for OAuth security
+│   └── jwt.js                # JWT/JWE utilities with JWKS support
 ├── middleware/
-│   ├── express.js            # Basic Express middleware setup
-│   └── logging.js            # Request logging middleware
+│   ├── express.js            # Express middleware with ngrok support
+│   └── logging.js            # Enhanced request logging with token analysis
 ├── routes/
-│   ├── oauth.js              # OAuth 2.0 routes
-│   └── saml.js               # SAML 2.0 routes
+│   ├── oauth.js              # OAuth 2.0/OIDC routes with response modes
+│   └── saml.js               # SAML 2.0 routes with Auth0 & Denver SSO
 ├── ui/
-│   └── templates.js          # HTML template generation
+│   └── templates.js          # Dynamic HTML template generation
 └── saml/
     ├── saml-core.js          # Core SAML functionality
-    ├── saml-encryption.js    # SAML encryption handling
-    └── saml-response.js      # SAML response generation
+    ├── saml-encryption.js    # Dynamic certificate handling
+    ├── saml-response.js      # SAML response generation
+    └── denver-sso.js         # Denver-specific SAML implementation
 ```
 
-### **Before vs After Refactoring**
+### **Architecture Evolution**
 
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| Main file size | ~2,950 lines | 270 lines | 91% reduction |
-| Number of modules | 1 | 11 | Better organization |
-| Code maintainability | Low | High | Easier to modify |
-| Test coverage potential | Difficult | Easy | Modular testing |
+| Metric | Original | Current | Improvement |
+|--------|----------|---------|-------------|
+| Main file size | ~2,950 lines | 320 lines | 89% reduction |
+| Modules | 1 | 12 | Modular architecture |
+| Protocols | OAuth 2.0 | OAuth 2.0, OIDC, SAML | Multi-protocol support |
+| Flows | Basic | 6+ flows | Comprehensive coverage |
+| LivePerson Integration | Basic | Advanced | Production-ready |
 
-## 📋 Supported Features
+## 📋 Supported Authentication Protocols
 
-### **OAuth 2.0 Flows**
-- **Implicit Flow** (`response_type=id_token`)
-- **Authorization Code Flow** (`response_type=code`)
-- **Authorization Code + PKCE Flow** (with challenge/verifier)
+### **🔄 OpenID Connect (OIDC)**
+**Primary use case:** LivePerson Agent SSO
 
-### **SAML 2.0**
-- Denver Agent SSO integration
-- Encrypted SAML assertions
-- Custom SAML response generation
+#### Front Channel (Implicit Flow)
+- **Response Type:** `id_token`
+- **Response Mode:** `form_post` (recommended) or `fragment`
+- **Client:** `MyIdPOIDCFC`
+- **Flow:** Direct token delivery via HTML form POST
+- **Security:** Minimal JWT payload for agent authentication
 
-### **Security Features**
-- JWT signing with RS256
-- JWE encryption support
-- PKCE implementation
-- Certificate-based encryption
+#### Back Channel (Authorization Code Flow)
+- **Response Type:** `code`
+- **Client:** `MyIdPOIDCBC`
+- **Flow:** Two-step authentication (code → token exchange)
+- **Standard:** OAuth 2.0 compliant with `code=` parameter
+- **Security:** Server-to-server token exchange
 
-### **Integration Features**
-- LivePerson platform integration
-- Dynamic issuer support
-- Multi-IdP configuration
-- Real-time request logging
+#### OIDC Discovery & Standards
+- **Discovery Endpoint:** `/.well-known/openid-configuration`
+- **JWKS Endpoint:** `/.well-known/jwks.json`
+- **UserInfo Endpoint:** `/userinfo`
+- **Dynamic Configuration:** ngrok-aware URL generation
+- **Standards Compliance:** Full OpenID Connect specification
+
+### **🔐 SAML 2.0**
+
+#### Auth0 SAML Integration
+**Primary use case:** SP-initiated SAML with LivePerson
+
+- **Account Support:** 81785735 (Alpha environment)
+- **Environment Awareness:** Alpha, NA, EU, APAC configurations
+- **Certificate Management:** Dynamic download (lpsso2026, lpsso2027, lpsso2028)
+- **Format Conversion:** Automatic PEM-to-DER conversion
+- **Encryption:** Optional with LivePerson certificates
+
+#### Denver SAML Integration  
+**Primary use case:** Legacy Denver agent authentication
+
+- **Custom Attributes:** `loginName`, `siteId`, agent-specific data
+- **Response Generation:** Custom SAML assertion creation
+- **Encryption Support:** LivePerson certificate integration
+- **Destination URLs:** Configurable target endpoints
+
+### **👤 OAuth 2.0 Consumer Authentication**
+**Primary use case:** LivePerson Consumer Authentication connector
+
+- **Implicit Flow:** Consumer chat authentication
+- **Authorization Code Flow:** Server-side consumer authentication
+- **PKCE Support:** Enhanced security for public clients
+- **JWE Encryption:** Optional token encryption with LivePerson certificates
 
 ## 🔧 Module Details
 
-### **config/config.js**
-Centralized configuration management for all server components.
+### **server.js** - Main Server (320 lines)
+Enhanced main server with OIDC discovery and multi-protocol support.
 
-**Exports:**
-- Server configuration (port, host)
-- OAuth configuration (flows, issuers)
-- JWT configuration (algorithms, keys)
-- PKCE configuration
-- LivePerson configuration
+**Key Features:**
+- OpenID Connect discovery endpoint
+- Dynamic URL generation for ngrok/proxy environments
+- Protocol-specific header handling
+- Comprehensive request routing
+- State management for all authentication flows
 
-### **utils/pkce.js**
-PKCE (Proof Key for Code Exchange) utilities for secure OAuth flows.
-
-**Functions:**
-- `verifyCodeChallenge(verifier, challenge)` - Verify PKCE challenge
-- `validatePKCEParams(params)` - Validate PKCE parameters
-- `base64URLEncode(buffer)` - Base64 URL encoding
-- `sha256(data)` - SHA256 hashing
-
-### **utils/jwt.js**
-JWT/JWE token creation and management utilities.
-
-**Functions:**
-- `createToken(payload, options)` - Create JWT/JWE tokens
-- `createAccessToken(payload)` - Create access tokens
-- `pemToJwk(pemKey)` - Convert PEM to JWK format
-- `generateJWKS(publicKey)` - Generate JWKS response
-
-### **middleware/express.js**
-Basic Express middleware setup and configuration.
-
-**Functions:**
-- `setupExpressMiddleware(app)` - Setup CORS, JSON parsing, Morgan
-- `setupExpressMiddlewareWithOptions(app, options)` - Advanced setup
-
-### **middleware/logging.js**
-Enhanced request logging with token analysis and state tracking.
-
-**Features:**
-- Request/response logging
-- Token format analysis
-- State-aware logging
-- Console and array storage
-- 100-request history limit
-
-### **routes/oauth.js**
-Complete OAuth 2.0 implementation with all supported flows.
+### **routes/oauth.js** - OAuth/OIDC Routes
+Complete OAuth 2.0 and OpenID Connect implementation.
 
 **Endpoints:**
-- `GET /authorize` - Authorization endpoint
-- `POST /token` - Token exchange endpoint
-- `POST /token-direct` - Direct token endpoint (testing)
-- `GET /oauth-callback.html` - OAuth callback page
+- `GET /authorize` - Authorization endpoint (all flows)
+- `POST /token` - Token exchange with ngrok bypass headers
+- `GET /userinfo` - OIDC user information endpoint
+- `POST /oidc/front-channel/initiate` - Front channel flow initiation
+- `POST /oidc/back-channel/initiate` - Back channel flow initiation
 
 **Features:**
-- Client authentication
-- Authorization code management
-- PKCE support
-- LivePerson ssoKey format
+- Response mode support (`fragment`, `query`, `form_post`)
+- OAuth 2.0 standard compliance (`code=` vs `ssoKey=`)
+- Client authentication and validation
+- PKCE challenge verification
+- Dynamic issuer detection with protocol enhancement
 
-### **routes/saml.js**
-SAML 2.0 implementation for Denver Agent SSO.
+### **routes/saml.js** - SAML Routes & UI
+Complete SAML 2.0 implementation with multiple integration types.
 
 **Endpoints:**
-- `GET /agentsso-denver` - Denver SSO testing page
-- `POST /generate-saml-assertion` - Generate SAML assertion
-- `POST /discover-denver-domain` - Domain discovery
+- `GET /agentsso-oidc-auth0` - OIDC testing interface
+- `GET /agentsso-auth0` - Auth0 SAML testing interface  
+- `GET /agentsso-denver` - Denver SAML testing interface
+- `POST /sso/saml` - SAML SSO endpoint
+- `POST /generate-saml-assertion` - Denver SAML generation
 
-### **ui/templates.js**
-HTML template generation for all UI components.
+**Features:**
+- Multi-tab UI for different authentication flows
+- Copy-to-clipboard functionality for configuration values
+- Dynamic certificate downloading and conversion
+- Environment-aware configuration
+- Form validation and error handling
 
-**Templates:**
-- `generateDashboardHTML()` - Main dashboard with controls
-- `generateOAuthCallbackHTML()` - OAuth callback page
-- `generateTestPageHTML()` - LivePerson test page with chat
+### **utils/jwt.js** - JWT/JWKS Utilities
+Enhanced JWT utilities with OIDC support and certificate management.
 
-## 🚀 Usage
+**Functions:**
+- `createToken(payload, options)` - JWT/JWE token creation with dynamic issuers
+- `createMinimalAgentToken(payload)` - OIDC agent-specific tokens
+- `generateJWKS(publicKey)` - JWKS endpoint response generation
+- `detectIssuerFromRequest(req)` - Dynamic issuer detection with ngrok support
+- `pemToJwk(pemKey)` - PEM to JWK conversion for key management
 
-### **Starting the Server**
-```bash
-npm start
-# or
-node server.js
-```
+### **saml/saml-encryption.js** - Enhanced Certificate Management
+Advanced certificate handling with dynamic downloading and format conversion.
 
-### **Development Mode**
-```bash
-npm run dev
-# Uses nodemon for auto-restart
-```
+**Functions:**
+- `downloadAndConvertCertificate(certificateName)` - Dynamic certificate fetching
+- `convertPemToDer(pemContent)` - Automatic format conversion
+- `ensureCertificateExists(certificateName)` - Certificate availability verification
+- `loadLivepersonCertificate(name)` - Multi-certificate support
 
-### **Configuration**
-All configuration is centralized in `config/config.js`. Key settings:
+### **middleware/logging.js** - Enhanced Request Logging
+Advanced logging with token analysis and flow-specific information.
 
+**Features:**
+- Token format detection and analysis
+- OIDC flow identification
+- Client credential extraction and masking
+- Request/response correlation
+- 100-request rolling history
+- Console and web dashboard integration
+
+## 🔄 State Management & Configuration
+
+### **Shared Application State**
 ```javascript
-export default {
-    server: {
-        port: process.env.PORT || 3000
-    },
-    oauth: {
-        defaultFlowType: 'implicit'
-    },
-    jwt: {
-        issuerBase: 'https://your-domain.com'
-    }
-}
+// Core authentication state
+app.locals.encryptionEnabled = false;
+app.locals.flowType = 'implicit';
+app.locals.requestLogs = [];
+
+// Certificate management
+app.locals.signingPrivateKey = loadedPrivateKey;
+app.locals.signingPublicKey = loadedPublicKey;
+app.locals.lpEncryptionPublicKey = loadedLpCert;
+
+// OIDC configuration
+app.locals.oidcConfig = {
+    frontChannelClient: 'MyIdPOIDCFC',
+    backChannelClient: 'MyIdPOIDCBC',
+    issuer: dynamicallyDetected,
+    scopes: ['openid', 'profile', 'email']
+};
 ```
 
-### **Key Management**
-The server requires RSA key pairs for JWT signing:
+### **Dynamic Configuration**
+- **Environment Detection:** Automatic ngrok/proxy URL detection
+- **Protocol Enhancement:** HTTP→HTTPS upgrade for ngrok environments
+- **Client Management:** Per-flow client ID/secret configuration
+- **Certificate Rotation:** Dynamic certificate downloading and caching
 
-```bash
-npm run generate-keys
+## 🌐 Integration Architecture
+
+### **LivePerson Platform Integration**
+
+#### Agent SSO (OIDC)
+```mermaid
+graph LR
+    A[Agent Login] --> B[LivePerson Auth]
+    B --> C[OIDC Authorization]
+    C --> D[IDP Server]
+    D --> E[JWT Generation]
+    E --> F[Agent Authenticated]
 ```
 
-For JWE encryption, place the LivePerson certificate:
-```
-certs/lpsso2026.pem
-```
-
-## 🔄 State Management
-
-The server maintains several state variables that are shared across modules:
-
-- `encryptionEnabled` - Toggle for JWE encryption
-- `flowType` - Current OAuth flow type
-- `signingPrivateKey` / `signingPublicKey` - JWT signing keys
-- `lpEncryptionPublicKey` - LivePerson encryption certificate
-- `requestLogs` - Array of recent requests
-
-State is synchronized across modules using the `updateAppLocals()` function.
-
-## 🧪 Testing
-
-### **Health Check**
-```bash
-curl http://localhost:3000/health
+#### Consumer Authentication (OAuth)
+```mermaid
+graph LR
+    A[Consumer Chat] --> B[LivePerson Widget]
+    B --> C[OAuth Flow]
+    C --> D[IDP Server]
+    D --> E[Consumer Token]
+    E --> F[Chat Authenticated]
 ```
 
-### **OAuth Flow Testing**
-1. Visit `http://localhost:3000/test` for LivePerson integration testing
-2. Use `http://localhost:3000/` for request monitoring
-3. SAML testing at `http://localhost:3000/agentsso-denver`
+### **Certificate & Security Architecture**
 
-### **Flow Type Switching**
-The server supports dynamic switching between OAuth flows:
-- Implicit Flow
-- Authorization Code Flow  
-- Authorization Code + PKCE Flow
+#### Dynamic Certificate Management
+- **Runtime Download:** Certificates fetched as needed
+- **Format Conversion:** Automatic PEM↔DER conversion
+- **Multi-Certificate:** Support for multiple LivePerson environments
+- **Graceful Fallback:** Signing-only mode when encryption unavailable
 
-## 🔐 Security Considerations
+#### Security Layers
+1. **Transport Security:** HTTPS enforcement for production flows
+2. **Token Security:** RS256 signing, optional JWE encryption
+3. **Flow Security:** PKCE for public clients, state parameters
+4. **Certificate Security:** Proper certificate validation and rotation
 
-1. **JWT Signing**: Uses RS256 with RSA key pairs
-2. **JWE Encryption**: Optional encryption with LivePerson certificates
-3. **PKCE**: Implemented for enhanced OAuth security
-4. **SAML**: Supports encrypted assertions
-5. **CORS**: Properly configured for cross-origin requests
+## 🧪 Testing Architecture
 
-## 📊 Monitoring
+### **Multi-Protocol Testing**
+The server provides comprehensive testing interfaces for all supported protocols:
 
-The server includes comprehensive request logging:
-- All requests logged with timestamps
-- Token analysis for OAuth responses
-- State tracking (encryption, flow type)
-- Console output with structured formatting
-- Web dashboard with real-time logs
+#### OIDC Testing (`/agentsso-oidc-auth0`)
+- **Tabbed Interface:** Front Channel vs Back Channel
+- **Configuration Section:** All endpoints and credentials with copy buttons
+- **Flow Testing:** SP-initiated authentication with LivePerson
+- **Debug Information:** Request/response logging and analysis
 
-## 🔄 Deployment
+#### SAML Testing (`/agentsso-auth0`, `/agentsso-denver`)
+- **Environment Selection:** Multi-environment support
+- **Certificate Testing:** Dynamic certificate download validation
+- **Encryption Testing:** Optional encryption with certificate selection
+- **Response Validation:** SAML assertion generation and verification
 
-### **Environment Variables**
-```bash
-PORT=3000
-NODE_ENV=production
-```
+### **Development Features**
+- **Live Reload:** Nodemon integration for development
+- **Request Monitoring:** Real-time request/response logging
+- **State Debugging:** Visual state management and flow tracking
+- **Error Handling:** Comprehensive error reporting and debugging
 
-### **Required Files**
-- `certs/signing-private.pem`
-- `certs/signing-public.pem`
-- `certs/lpsso2026.pem` (optional, for encryption)
+## 🚀 Deployment Considerations
 
-### **LivePerson Configuration**
-Configure LivePerson IdP with:
-- **Authorization URL**: `https://your-domain.com/authorize`
-- **Token URL**: `https://your-domain.com/token`
-- **JWKS URL**: `https://your-domain.com/.well-known/jwks.json`
-- **Client ID**: `clientid`
-- **Client Secret**: `1234567890`
+### **Production Readiness**
+- **Environment Variables:** Full configuration via environment
+- **Certificate Management:** Secure certificate storage and rotation
+- **Logging:** Production-grade logging with sensitive data masking
+- **Health Checks:** Comprehensive health monitoring endpoints
 
-## 🚀 Performance Benefits
+### **Scalability**
+- **Modular Architecture:** Easy horizontal scaling
+- **Stateless Design:** Request-level state management
+- **Certificate Caching:** Efficient certificate reuse
+- **Connection Pooling:** Optimized for high-throughput scenarios
 
-The modular architecture provides several performance and maintainability benefits:
+### **Security**
+- **Credential Management:** Secure client secret storage
+- **Certificate Validation:** Proper certificate chain validation
+- **Token Expiration:** Configurable token lifetime management
+- **Audit Logging:** Comprehensive security event logging
 
-1. **Faster Development**: Smaller, focused modules
-2. **Better Testing**: Each module can be tested independently
-3. **Easier Debugging**: Clear separation of concerns
-4. **Scalable Architecture**: Easy to add new features
-5. **Code Reusability**: Modules can be reused in other projects
+## 📈 Performance & Monitoring
 
-## 🔮 Future Enhancements
+### **Performance Optimizations**
+- **Certificate Caching:** Reduced certificate download overhead
+- **Template Caching:** Efficient HTML generation
+- **State Management:** Minimal memory footprint
+- **Request Batching:** Efficient logging and monitoring
 
-Possible future improvements:
-1. Database integration for persistent storage
-2. Redis for session management
-3. Rate limiting middleware
-4. Enhanced error handling
-5. API versioning
-6. Swagger/OpenAPI documentation
-7. Docker containerization
-8. Unit and integration tests 
+### **Monitoring Capabilities**
+- **Real-time Dashboard:** Live request monitoring
+- **Flow Analytics:** Authentication flow success/failure tracking
+- **Certificate Status:** Certificate expiration and validity monitoring
+- **Performance Metrics:** Response time and throughput monitoring 

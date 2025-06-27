@@ -26,7 +26,7 @@ import * as jose from 'jose';
 import saml from 'samlify';
 
 // Import configuration
-import config from './config/config.js';
+import config, { runtimeConfig } from './config/config.js';
 
 // Import utilities
 import { generateJWKS } from './utils/jwt.js';
@@ -223,6 +223,114 @@ app.post('/toggle-flow-type', (req, res) => {
     }
 });
 
+// ============================================================================
+// ACCOUNT MANAGEMENT ENDPOINTS
+// ============================================================================
+
+// Get current account configuration
+app.get('/api/account', (req, res) => {
+    res.json({
+        success: true,
+        currentAccount: runtimeConfig.currentAccount,
+        availableAccounts: config.livePerson.testAccounts,
+        defaultAgent: config.livePerson.defaultAgent
+    });
+});
+
+// Update current account
+app.post('/api/account', (req, res) => {
+    const { siteId, name, description } = req.body;
+    
+    if (!siteId) {
+        return res.status(400).json({
+            error: 'missing_site_id',
+            error_description: 'Site ID is required'
+        });
+    }
+    
+    // Update runtime configuration
+    runtimeConfig.currentAccount = {
+        siteId: siteId,
+        name: name || `Account ${siteId}`,
+        description: description || 'Custom test account'
+    };
+    
+    console.log(`[ACCOUNT] Updated to: ${runtimeConfig.currentAccount.name} (${siteId})`);
+    
+    res.json({
+        success: true,
+        currentAccount: runtimeConfig.currentAccount,
+        message: `Account switched to ${runtimeConfig.currentAccount.name}`
+    });
+});
+
+// Get current account (quick endpoint for UI)
+app.get('/api/account/current', (req, res) => {
+    res.json(runtimeConfig.currentAccount);
+});
+
+// ============================================================================
+// EXISTING API ROUTES CONTINUE...
+// ============================================================================
+
+// OpenID Connect Discovery endpoint
+app.get('/.well-known/openid-configuration', (req, res) => {
+    // Check for forwarded headers from ngrok/proxy
+    const forwardedHost = req.get('x-forwarded-host') || req.get('x-original-host');
+    const forwardedProto = req.get('x-forwarded-proto') || req.get('x-forwarded-protocol');
+    
+    // Use forwarded headers if available, otherwise fall back to direct headers
+    const host = forwardedHost || req.get('host');
+    const protocol = forwardedProto || req.protocol;
+    
+    const baseUrl = `${protocol}://${host}`;
+    
+    // Debug logging
+    console.log('🔍 OpenID Connect Discovery endpoint called');
+    console.log('🌐 Request headers:');
+    console.log('   - host:', req.get('host'));
+    console.log('   - x-forwarded-host:', req.get('x-forwarded-host'));
+    console.log('   - x-forwarded-proto:', req.get('x-forwarded-proto'));
+    console.log('   - protocol:', req.protocol);
+    console.log('📍 Resolved Base URL:', baseUrl);
+    
+    const openidConfig = {
+        issuer: `${baseUrl}`,
+        authorization_endpoint: `${baseUrl}/authorize`,
+        token_endpoint: `${baseUrl}/token`,
+        userinfo_endpoint: `${baseUrl}/userinfo`,
+        jwks_uri: `${baseUrl}/.well-known/jwks.json`,
+        response_types_supported: [
+            "code",
+            "id_token", 
+            "code id_token"
+        ],
+        response_modes_supported: [
+            "query",
+            "fragment", 
+            "form_post"
+        ],
+        grant_types_supported: [
+            "authorization_code",
+            "implicit"
+        ],
+        subject_types_supported: ["public"],
+        id_token_signing_alg_values_supported: ["RS256"],
+        scopes_supported: ["openid", "profile", "email"],
+        token_endpoint_auth_methods_supported: [
+            "client_secret_basic",
+            "client_secret_post"
+        ],
+        claims_supported: [
+            "iss", "sub", "aud", "exp", "iat", "nonce",
+            "name", "given_name", "family_name", "email", 
+            "phone_number", "lp_sdes"
+        ]
+    };
+    
+    res.json(openidConfig);
+});
+
 // JWKS endpoint for public key distribution
 app.get('/.well-known/jwks.json', async (req, res) => {
     try {
@@ -305,3 +413,133 @@ function startServer() {
 
 // Start the server
 startServer();
+
+// Denver SSO endpoint (POST) - Create and return SAML assertion for Denver system
+app.post('/denver-sso', async (req, res) => {
+    try {
+        const { loginName, siteId, destinationUrl, encrypt, method } = req.body;
+        
+        // Use provided values or defaults
+        const finalLoginName = loginName || 'test.user@liveperson.com';
+        const finalSiteId = siteId || runtimeConfig.currentAccount.siteId;
+        const finalDestinationUrl = destinationUrl || 'https://authentication.liveperson.net/api/account/a41244303/saml/redirect?lpservice=liveEngage&authRequest=Auth-Consume';
+        const shouldEncrypt = encrypt === 'true' || encrypt === true;
+        
+        // Get SAML implementation method from config or request
+        const samlMethod = method || config.saml.implementation || 'auto';
+        
+        console.log('🚀 Denver SSO Request received');
+        console.log(`📧 Login Name: ${finalLoginName}`);
+        console.log(`🏢 Site ID: ${finalSiteId}`);
+        console.log(`🎯 Destination URL: ${finalDestinationUrl}`);
+        console.log(`🔒 Encrypt: ${shouldEncrypt}`);
+        console.log(`🛠️ SAML Method: ${samlMethod}`);
+        
+        // Create SAML response with specified method
+        const { samlResponse, method: usedMethod } = await createSAMLResponse(
+            finalSiteId, 
+            finalLoginName, 
+            finalDestinationUrl, 
+            shouldEncrypt,
+            samlMethod
+        );
+        
+        console.log(`✅ SAML Response created successfully using ${usedMethod}`);
+        
+        // Determine the form action URL (use destination URL)
+        const formAction = finalDestinationUrl;
+        
+        // Create the HTML auto-submit form
+        const htmlForm = `<!DOCTYPE html>
+<html>
+<head>
+    <title>SAML SSO - Redirecting...</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #f5f5f5;
+        }
+        .container {
+            text-align: center;
+            background: white;
+            padding: 2rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 1rem auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .debug-info {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 1rem;
+            margin-top: 1rem;
+            text-align: left;
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="spinner"></div>
+        <h2>🚀 SAML SSO Login</h2>
+        <p>Redirecting to LivePerson Denver system...</p>
+        <p><strong>User:</strong> ${finalLoginName}</p>
+        <p><strong>Site ID:</strong> ${finalSiteId}</p>
+        <p><strong>Method:</strong> ${usedMethod}</p>
+        
+        <form id="samlForm" action="${formAction}" method="post">
+            <input type="hidden" name="SAMLResponse" value="${Buffer.from(samlResponse).toString('base64')}" />
+        </form>
+        
+        <div class="debug-info">
+            <strong>🔧 Debug Information:</strong><br>
+            Destination: ${finalDestinationUrl}<br>
+            Encryption: ${shouldEncrypt ? 'Enabled' : 'Disabled'}<br>
+            SAML Method: ${usedMethod}<br>
+            Response Length: ${samlResponse.length} chars<br>
+            Timestamp: ${new Date().toISOString()}
+        </div>
+        
+        <p style="margin-top: 1rem;">
+            <small>If you are not redirected automatically, <a href="#" onclick="document.getElementById('samlForm').submit();">click here</a>.</small>
+        </p>
+    </div>
+    
+    <script>
+        // Auto-submit the form after a brief delay
+        setTimeout(() => {
+            document.getElementById('samlForm').submit();
+        }, 2000);
+    </script>
+</body>
+</html>`;
+        
+        res.send(htmlForm);
+        
+    } catch (error) {
+        console.error('❌ Error in Denver SSO endpoint:', error);
+        res.status(500).json({
+            error: 'SAML Response generation failed',
+            message: error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});

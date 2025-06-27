@@ -1,6 +1,6 @@
-const axios = require('axios');
-const { encryptSAMLAssertion, loadLivePersonCertificate } = require('./saml-encryption');
-const { signSAMLAssertion } = require('./saml-core');
+import axios from 'axios';
+import { encryptSAMLAssertion, loadLivePersonCertificate } from './saml-encryption.js';
+import { signSAMLAssertion } from './saml-response.js';
 
 /**
  * Setup Denver SSO related routes
@@ -37,7 +37,7 @@ function setupDenverSSORoutes(app) {
     
     // SAML assertion generation endpoint
     app.post('/generate-saml-assertion', async (req, res) => {
-        const { siteId, loginName, encrypt, shouldEncrypt, encryptionCert, baseURI, destinationUrl } = req.body;
+        const { siteId, loginName, encrypt, shouldEncrypt, encryptionCert, baseURI, destinationUrl, encryptionCertName } = req.body;
         
         try {
             const result = await generateSAMLAssertion({
@@ -45,7 +45,8 @@ function setupDenverSSORoutes(app) {
                 loginName,
                 shouldEncrypt: shouldEncrypt !== undefined ? shouldEncrypt : encrypt,
                 baseURI,
-                destinationUrl
+                destinationUrl,
+                encryptionCertName
             });
             
             res.json(result);
@@ -93,7 +94,7 @@ async function discoverDenverDomain(siteId) {
  * @param {Object} params - Generation parameters
  * @returns {Object} Generation result
  */
-async function generateSAMLAssertion({ siteId, loginName, shouldEncrypt, baseURI, destinationUrl }) {
+async function generateSAMLAssertion({ siteId, loginName, shouldEncrypt, baseURI, destinationUrl, encryptionCertName }) {
     // Use provided destinationUrl or construct the proper Denver destination URL
     let finalDestinationUrl = destinationUrl || 'https://mature-mackerel-golden.ngrok-free.app'; // fallback
     if (!destinationUrl && baseURI && siteId) {
@@ -110,7 +111,7 @@ async function generateSAMLAssertion({ siteId, loginName, shouldEncrypt, baseURI
     };
     
     // Generate SAML response using the signSAMLAssertion function with encryption support
-    const result = await signSAMLAssertion(assertionData, finalDestinationUrl, shouldEncrypt);
+    const result = await signSAMLAssertion(assertionData, finalDestinationUrl, shouldEncrypt, encryptionCertName);
     
     if (result && result.xml) {
         console.log('✅ SAML assertion generated successfully');
@@ -162,7 +163,7 @@ function generateDenverSSOPage(encryptionEnabled) {
     `;
 }
 
-module.exports = {
+export {
     setupDenverSSORoutes,
     discoverDenverDomain,
     generateSAMLAssertion

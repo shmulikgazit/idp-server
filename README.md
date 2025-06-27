@@ -1,187 +1,174 @@
 # LivePerson IDP Server
 
-A local Identity Provider (IDP) server for testing LivePerson consumer authentication with JWE encryption support.
+A comprehensive Identity Provider (IDP) server for testing LivePerson authentication integrations with support for:
+- **🔄 OIDC Agent SSO** (Front Channel & Back Channel flows)
+- **🔐 SAML Agent SSO** (Auth0 & Denver integrations)  
+- **👤 OAuth 2.0 Consumer Authentication**
 
-## Features
+## 🚀 Quick Start
 
-- ✅ OAuth 2.0 Implicit Flow support
-- ✅ OpenID Connect ID tokens
-- ✅ JWT signing with RS256
-- ✅ JWE encryption support (RSA-OAEP) with LivePerson certificate
-- ✅ JWKS endpoint for public key distribution
-- ✅ Real-time request logging with web dashboard
-- ✅ LivePerson-specific claims (lp_sdes)
-- ✅ Encryption toggle for easy testing
-- ✅ Ready for ngrok exposure
-- ✅ SAML SSO support with samlify library (handles signing and encryption)
-- ✅ Denver agent SSO integration with AttributeStatement support
-
-## Quick Start
-
-### Prerequisites
-
-Make sure you have Node.js installed. If not, download it from [nodejs.org](https://nodejs.org/).
-
-### 1. Install Dependencies
-
+### 1. Install and Generate Keys
 ```bash
 npm install
-```
-
-### 2. Generate Cryptographic Keys
-
-```bash
 npm run generate-keys
 ```
 
-This creates RSA key pairs in the `./certs/` directory:
-- `signing-private.pem` / `signing-public.pem` - For JWT signing/verification
+### 2. Optional - Add LivePerson Encryption Certificate
+Place `lpsso2026.pem` (or similar) in `./certs/` directory for encryption support.
 
-### 3. Add LivePerson Encryption Certificate (Optional)
-
-To test JWE encryption with LivePerson's actual certificate:
-
-1. Place LivePerson's encryption certificate as `./certs/lpsso2026.pem`
-2. The server will automatically detect and use it when encryption is enabled
-3. The JWE header will use `kid: "lpsso2026"` as required by LivePerson
-
-### 4. Start the Server
-
+### 3. Start Server & ngrok
 ```bash
-npm start
+npm start        # Start server on port 3000
+ngrok http 3000  # Create public tunnel
+```
+Copy the HTTPS ngrok URL: `https://your-domain.ngrok-free.app`
+
+---
+
+## 🎯 Testing Scenarios
+
+### 🔄 OIDC Agent SSO (Recommended)
+
+**Use for:** LivePerson Agent SSO with OpenID Connect
+
+#### Front Channel (Implicit Flow)
+1. **Visit:** `https://your-ngrok-url/agentsso-oidc-auth0`
+2. **Configure LivePerson connection:** `MyIdPOIDCFC`
+3. **Copy configuration values** using the 📋 copy buttons
+4. **Test flow:** Click "Start Front Channel Flow"
+
+#### Back Channel (Authorization Code Flow) 
+1. **Visit:** `https://your-ngrok-url/agentsso-oidc-auth0`
+2. **Configure LivePerson connection:** `MyIdPOIDCBC`
+3. **Copy configuration values** using the 📋 copy buttons
+4. **Test flow:** Click "Start Back Channel Flow"
+
+**OIDC Configuration:**
+- **Issuer:** `https://your-ngrok-url`
+- **Authorization Endpoint:** `https://your-ngrok-url/authorize`
+- **Token Endpoint:** `https://your-ngrok-url/token`
+- **JWKS URL:** `https://your-ngrok-url/.well-known/jwks.json`
+- **Client ID:** `MyIdPOIDC`
+- **Client Secret:** `client-secret-123`
+
+---
+
+### 🔐 SAML Agent SSO 
+
+#### Auth0 SAML Integration
+**Use for:** SP-initiated SAML with LivePerson (Account: 81785735)
+
+1. **Visit:** `https://your-ngrok-url/agentsso-auth0`
+2. **Configure environment** (Alpha, NA, EU, APAC)
+3. **Enable/disable encryption** with certificate selection
+4. **Test flow:** Enter credentials and click "Initiate SAML Authentication"
+
+**Key Features:**
+- SP-initiated flow with LivePerson
+- Dynamic certificate download (lpsso2026, lpsso2027, lpsso2028)
+- Automatic PEM-to-DER conversion
+- Environment-aware configuration
+
+#### Denver SAML Integration
+**Use for:** Legacy Denver agent authentication
+
+1. **Visit:** `https://your-ngrok-url/agentsso-denver`
+2. **Configure agent details** (Login Name, Site ID, Destination URL)
+3. **Enable encryption** if needed
+4. **Test flow:** Click "Generate SAML Assertion"
+
+**Key Features:**
+- Custom SAML response generation
+- Agent attribute mapping
+- Encryption support with LivePerson certificates
+- Auto PEM-to-DER conversion
+
+---
+
+### 👤 OAuth Consumer Authentication
+
+**Use for:** LivePerson Consumer Authentication connector
+
+1. **Visit:** `https://your-ngrok-url/test`
+2. **Configure LivePerson** with OAuth endpoints:
+   - Authorization: `https://your-ngrok-url/authorize`
+   - Token: `https://your-ngrok-url/token`
+   - JWKS: `https://your-ngrok-url/.well-known/jwks.json`
+3. **Test authentication** from LivePerson chat widget
+
+---
+
+## 🗂️ Project Structure
+
+```
+├── server.js                     # Main server with OIDC discovery
+├── config/config.js              # Configuration management
+├── routes/
+│   ├── oauth.js                  # OAuth/OIDC endpoints
+│   └── saml.js                   # SAML endpoints & test pages
+├── middleware/
+│   ├── express.js                # Express middleware setup
+│   └── logging.js                # Request logging
+├── utils/
+│   ├── jwt.js                    # JWT utilities & JWKS
+│   └── pkce.js                   # PKCE implementation
+├── saml/
+│   ├── saml-core.js              # SAML initialization
+│   ├── saml-encryption.js        # Certificate handling
+│   ├── saml-response.js          # SAML response generation
+│   └── denver-sso.js             # Denver-specific SAML
+├── ui/
+│   └── templates.js              # HTML template generation
+├── certs/                        # Certificate storage
+│   ├── lpsso2026.pem            # LivePerson certificates
+│   ├── samlify-signing-cert.pem # SAML signing certificate
+│   ├── signing-private.pem      # JWT signing keys
+│   └── CREATE-CERTIFICATE.md    # Certificate instructions
+└── generate-keys.js              # Key generation utility
 ```
 
-The server will start on `http://localhost:3000`
+---
 
-### 5. Expose via ngrok (for LivePerson integration)
+## 🔧 Available Endpoints
 
-```bash
-# Install ngrok if you haven't already
-# Download from https://ngrok.com/
+### Web UI
+| Page | URL | Description |
+|------|-----|-------------|
+| **Dashboard** | `/` | Server status & request logs |
+| **OIDC Test Page** | `/agentsso-oidc-auth0` | Front/Back Channel OIDC testing |
+| **Auth0 SAML** | `/agentsso-auth0` | SP-initiated SAML with LivePerson |
+| **Denver SAML** | `/agentsso-denver` | Legacy Denver SAML testing |
+| **Consumer Test** | `/test` | OAuth consumer authentication |
 
-# Expose the local server
-ngrok http 3000
-```
-
-Copy the ngrok HTTPS URL (e.g., `https://abc123.ngrok.io`) for LivePerson configuration.
-
-## Server Endpoints
-
+### API Endpoints
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/` | GET | Request logs dashboard with encryption toggle |
-| `/.well-known/jwks.json` | GET | JWKS endpoint for public keys |
-| `/token` | POST | OAuth token endpoint |
-| `/authorize` | GET | OAuth authorization endpoint (implicit flow) |
-| `/encryption-public-key` | GET | Public encryption key for LivePerson |
-| `/toggle-encryption` | POST | Toggle JWE encryption on/off |
-| `/health` | GET | Health check |
+| `/.well-known/openid-configuration` | GET | OIDC discovery document |
+| `/.well-known/jwks.json` | GET | Public keys (JWKS) |
+| `/authorize` | GET | OAuth/OIDC authorization |
+| `/token` | POST | Token exchange (authorization code flow) |
+| `/userinfo` | GET | OIDC user information |
+| `/sso/saml` | GET/POST | SAML SSO endpoint |
+| `/health` | GET | Server health check |
 
-## Encryption Toggle Feature
+---
 
-The server includes a web-based toggle to switch between:
+## 🎫 Token Format
 
-1. **Signing Only Mode** (Default) - Returns standard signed JWTs (easier for initial testing)
-2. **JWE Encryption Mode** - Returns JWE-encrypted tokens using LivePerson's certificate
-
-### Using the Toggle
-
-1. Visit `http://localhost:3000` (or your ngrok URL)
-2. Use the encryption toggle switch in the dashboard
-3. The toggle shows current status and certificate availability
-4. All subsequent token requests will use the selected mode
-
-## Testing Workflow
-
-### Phase 1: Start with Signing Only
-1. Start server with encryption disabled (default)
-2. Configure LivePerson connector
-3. Test authentication flow with signed JWTs
-4. Verify user data appears correctly in LivePerson
-
-### Phase 2: Enable JWE Encryption
-1. Place `lpsso2026.pem` in `./certs/` directory
-2. Enable encryption via the web toggle
-3. Test authentication flow with JWE tokens
-4. Verify LivePerson can decrypt and process tokens
-
-### 1. SAML AttributeStatement Test
-
-To validate that SAML responses include the required attributes for LivePerson:
-
-```bash
-node test-saml-attributes.js
+### OIDC Agent SSO (Minimal)
+```json
+{
+  "sub": "admin",
+  "aud": "MyIdPOIDC",
+  "exp": 1751031850,
+  "iat": 1751028250,
+  "iss": "https://your-ngrok-url",
+  "nonce": "...",
+  "loginName": "admin"
+}
 ```
 
-This test verifies that:
-- SAML responses contain `AttributeStatement` section
-- `loginName` and `siteId` attributes are properly included
-- NameID is populated correctly
-- AuthnStatement is present with proper timestamps
-
-### 2. Implicit Flow Test
-
-Visit the authorization endpoint directly:
-```
-http://localhost:3000/authorize?client_id=test&redirect_uri=http://localhost:3000&response_type=id_token&scope=openid&state=test&nonce=123
-```
-
-### 3. Token Endpoint Test
-
-```bash
-curl -X POST http://localhost:3000/token \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=authorization_code&code=test&client_id=test"
-```
-
-### 4. Toggle Encryption Test
-
-```bash
-# Enable encryption
-curl -X POST http://localhost:3000/toggle-encryption \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": true}'
-
-# Disable encryption  
-curl -X POST http://localhost:3000/toggle-encryption \
-  -H "Content-Type: application/json" \
-  -d '{"enabled": false}'
-```
-
-## LivePerson Configuration
-
-### 1. Consumer Authentication Connector Setup
-
-In your LivePerson account, configure the Consumer Authentication connector with:
-
-**Authorization Endpoint:**
-```
-https://your-ngrok-url.ngrok.io/authorize
-```
-
-**Token Endpoint:**
-```
-https://your-ngrok-url.ngrok.io/token
-```
-
-**JWKS Endpoint:**
-```
-https://your-ngrok-url.ngrok.io/.well-known/jwks.json
-```
-
-### 2. Encryption Certificate
-
-Get the encryption public key from:
-```
-https://your-ngrok-url.ngrok.io/encryption-public-key
-```
-
-This endpoint returns the LivePerson certificate (`lpsso2026.pem`) if available in the `./certs/` directory.
-
-### 3. Test User Data
-
-The server returns test user data in ID tokens:
-
+### OAuth Consumer Authentication (Full)
 ```json
 {
   "sub": "test-user-123",
@@ -194,115 +181,102 @@ The server returns test user data in ID tokens:
     "customerInfo": {
       "customerId": "test-customer-123",
       "customerType": "premium",
-      "balance": 1500.00,
-      "accountNumber": "ACC-789456123"
-    },
-    "personalInfo": {
-      "name": "Test User",
-      "email": "test.user@example.com",
-      "phone": "+1234567890"
+      "balance": 1500.00
     }
   }
 }
 ```
 
-## Request Monitoring
+---
 
-Visit `http://localhost:3000` (or your ngrok URL) to see:
-- Real-time request logs
-- Server status
-- Encryption toggle control
-- Available endpoints
-- Recent authentication requests from LivePerson
+## 🔒 Security Features
 
-The page auto-refreshes every 10 seconds to show new requests.
+### Encryption Support
+- **JWT Signing:** RS256 with rotatable keys
+- **JWE Encryption:** RSA-OAEP + A256GCM when enabled
+- **SAML Encryption:** Dynamic certificate download and conversion
+- **ngrok Bypass:** Automatic header injection for seamless flows
 
-## File Structure
+### Certificate Management
+- **Auto-conversion:** PEM-to-DER conversion for SAML
+- **Dynamic download:** Certificate fetching from LivePerson URLs
+- **Multi-certificate:** Support for lpsso2026, lpsso2027, lpsso2028
+- **Graceful fallback:** Fallback to signing-only when encryption unavailable
 
+### OIDC Compliance
+- **Standard flows:** Implicit and Authorization Code flows
+- **Response modes:** Fragment, query, and form_post
+- **PKCE support:** For enhanced security in authorization code flows
+- **Discovery document:** Full OpenID Connect discovery support
+
+---
+
+## 🚨 Troubleshooting
+
+### OIDC Issues
+- **"invalid_request":** Check connection name matches (MyIdPOIDCFC/MyIdPOIDCBC)
+- **"unexpected iss value":** Verify issuer uses HTTPS not HTTP
+- **"tenant not found":** Ensure using `code=` not `ssoKey=` for back channel
+
+### SAML Issues
+- **Certificate errors:** Check PEM files exist in `./certs/`
+- **Encryption failures:** Verify certificate format and auto-conversion
+- **SP-initiated failures:** Check LivePerson environment configuration
+
+### General Issues
+- **Port conflicts:** Use `PORT=3001 npm start`
+- **Key errors:** Run `npm run generate-keys`
+- **ngrok warnings:** Server includes bypass headers automatically
+
+---
+
+## 🎯 Testing Quick Reference
+
+### OIDC Front Channel Test
+```bash
+# Visit in browser (will redirect to LivePerson)
+https://your-ngrok-url/authorize?client_id=MyIdPOIDC&response_type=id_token&response_mode=form_post&scope=openid&redirect_uri=https://auth-z1-a.liveperson.net/login/callback&nonce=test123
 ```
-├── server.js                  # Main server application
-├── generate-keys.js           # Key generation script
-├── generate-certificate.js    # Certificate generation utility
-├── test-saml-attributes.js    # SAML AttributeStatement test
-├── package.json               # Dependencies and scripts
-├── README.md                  # This file
-├── test-endpoints.ps1         # PowerShell test script
-├── test-endpoints.bat         # Batch test script
-└── certs/                     # Certificate files (all actively used)
-    ├── lpsso2026.pem          # LivePerson encryption certificate (for JWE)
-    ├── samlify-signing-cert.pem # SAML signing certificate
-    ├── samlify-private.pem    # SAML signing private key
-    ├── signing-private.pem    # JWT signing private key
-    └── signing-public.pem     # JWT signing public key
+
+### OIDC Back Channel Test
+```bash
+# Step 1: Get authorization code
+https://your-ngrok-url/authorize?client_id=MyIdPOIDC&response_type=code&scope=openid&redirect_uri=https://auth-z1-a.liveperson.net/login/callback&state=test123
+
+# Step 2: Exchange code for tokens
+curl -X POST https://your-ngrok-url/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code&code=RECEIVED_CODE&client_id=MyIdPOIDC&client_secret=client-secret-123"
 ```
 
-## JWE Implementation Notes
+### OIDC Discovery
+```bash
+curl https://your-ngrok-url/.well-known/openid-configuration | jq
+```
 
-When encryption is enabled and `lpsso2026.pem` is available:
-- JWE header will include `kid: "lpsso2026"`
-- Encryption algorithm: RSA-OAEP
-- Content encryption: A256GCM (standard)
-- The signed JWT becomes the JWE payload
+---
 
-## Security Notes
+## ⚠️ Important Notes
 
-⚠️ **This is for testing only!** 
-
-- Uses fixed test user data
-- Accepts any authorization code
+**For Development/Testing Only!**
+- Uses fixed test credentials (`admin`/`client-secret-123`)
 - No real authentication validation
-- Keys are generated locally
-- Not suitable for production use
+- Certificates stored in plaintext
+- Not suitable for production environments
 
-## Troubleshooting
+---
 
-### Keys Not Found Error
-```
-Error loading keys: ENOENT: no such file or directory
-```
-**Solution:** Run `npm run generate-keys` first.
+## 📚 Resources
 
-### LivePerson Certificate Not Found
-```
-⚠ LivePerson encryption certificate (lpsso2026.pem) not found
-```
-**Solution:** Place the LivePerson certificate as `./certs/lpsso2026.pem`
+- [LivePerson OIDC Documentation](https://developers.liveperson.com/)
+- [LivePerson SAML SSO Guide](https://developers.liveperson.com/)
+- [OpenID Connect Specification](https://openid.net/connect/)
+- [OAuth 2.0 RFC](https://tools.ietf.org/html/rfc6749)
 
-### Port Already in Use
-```
-Error: listen EADDRINUSE :::3000
-```
-**Solution:** Change the port by setting the PORT environment variable:
-```bash
-PORT=3001 npm start
-```
+---
 
-### ngrok Connection Issues
-- Make sure ngrok is installed and authenticated
-- Use the HTTPS URL from ngrok (not HTTP)
-- Check that the ngrok tunnel is active
+## 🏗️ Architecture
 
-## Development
+This server implements a comprehensive identity provider supporting multiple authentication protocols and flows for LivePerson integration testing. It features modular architecture with separate concerns for OAuth, SAML, certificate management, and UI generation, making it easy to extend and maintain.
 
-### Start with Auto-reload
-```bash
-npm run dev
-```
-
-### Customize Test User Data
-
-Edit the payload in `server.js` around line 300 to modify the test user information returned in ID tokens.
-
-### Add Custom Claims
-
-Modify the `lp_sdes` object in the token creation functions to include additional LivePerson-specific data.
-
-## Support
-
-For LivePerson-specific configuration questions, refer to:
-- [LivePerson Developer Documentation](https://developers.liveperson.com/)
-- [Consumer Authentication Guide](https://developers.liveperson.com/consumer-authentication-authenticate-in-web-and-mobile-messaging-introduction.html)
-
-## License
-
-MIT License - This is a testing tool for development purposes. 
+The server automatically handles protocol-specific requirements like ngrok bypass headers, certificate format conversion, and response mode handling to ensure seamless integration with LivePerson's various authentication systems. 

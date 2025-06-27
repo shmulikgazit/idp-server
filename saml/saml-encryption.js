@@ -8,18 +8,79 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
- * Load LivePerson encryption certificate
- * @returns {string|null} Certificate content or null if not found
+ * Convert PEM certificate to DER format using Node.js crypto
+ * @param {string} pemCert - Certificate in PEM format
+ * @returns {Buffer|null} Certificate in DER format as Buffer
  */
-function loadLivePersonCertificate() {
+function convertPemToDer(pemCert) {
     try {
-        const certPath = path.join(__dirname, '..', 'certs', 'lpsso2026.pem');
-        if (fs.existsSync(certPath)) {
-            const cert = fs.readFileSync(certPath, 'utf8');
-            console.log('✅ LivePerson encryption certificate loaded');
+        if (!pemCert || typeof pemCert !== 'string') {
+            console.log('❌ Invalid PEM certificate provided for conversion');
+            return null;
+        }
+        
+        console.log('🔄 Converting PEM to DER format...');
+        
+        // Use Node.js crypto to parse the certificate and convert to DER
+        const x509 = new crypto.X509Certificate(pemCert);
+        const derBuffer = x509.raw; // This gives us the DER-encoded certificate as Buffer
+        
+        console.log('✅ Successfully converted PEM to DER');
+        console.log('🔍 DER size:', derBuffer.length, 'bytes');
+        console.log('🔍 DER first 20 bytes (hex):', derBuffer.slice(0, 20).toString('hex'));
+        
+        return derBuffer;
+    } catch (error) {
+        console.error('❌ PEM to DER conversion failed:', error.message);
+        return null;
+    }
+}
+
+/**
+ * Load LivePerson encryption certificate
+ * @param {string} format - 'der' or 'pem' format preference
+ * @param {string} certName - Certificate name (e.g., 'lpsso2026', 'lpsso2027')
+ * @returns {string|Buffer|null} Certificate content or null if not found
+ */
+function loadLivePersonCertificate(format = 'pem', certName = 'lpsso2026') {
+    try {
+        // Build paths based on certificate name
+        const derPath = path.join(__dirname, '..', 'certs', `${certName}.der`);
+        const pemPath = path.join(__dirname, '..', 'certs', `${certName}.pem`);
+        
+        if (format === 'der' && fs.existsSync(derPath)) {
+            // Try to load existing DER file first
+            const cert = fs.readFileSync(derPath); // Read as Buffer for DER
+            console.log(`✅ LivePerson encryption certificate loaded: ${certName} (DER format)`);
+            console.log('🔍 DER certificate size:', cert.length, 'bytes');
+            return cert;
+        } else if (format === 'der' && fs.existsSync(pemPath)) {
+            // Convert PEM to DER on the fly
+            console.log(`🔄 DER requested but only PEM available, auto-converting: ${certName}`);
+            console.log(`📁 Converting PEM file: ${pemPath}`);
+            const pemCert = fs.readFileSync(pemPath, 'utf8');
+            const derCert = convertPemToDer(pemCert);
+            
+            if (derCert) {
+                console.log(`✅ AUTO-CONVERTED PEM to DER: ${certName}`);
+                console.log(`🔍 Original PEM size: ${pemCert.length} characters`);
+                console.log(`🔍 Converted DER size: ${derCert.length} bytes`);
+                console.log(`💡 No manual conversion needed - PEM files work automatically!`);
+                return derCert;
+            } else {
+                console.error(`❌ CRITICAL: Failed to convert PEM to DER for certificate: ${certName}`);
+                console.error(`💥 DER format is required for samlify compatibility but conversion failed`);
+                console.error(`🔧 Please check that the PEM file contains a valid certificate format`);
+                console.error(`📁 File location: ${pemPath}`);
+                throw new Error(`Certificate conversion failed: Unable to convert ${certName}.pem to DER format. DER format is required for SAML operations but the PEM certificate could not be converted. Please verify the certificate file is valid.`);
+            }
+        } else if (fs.existsSync(pemPath)) {
+            const cert = fs.readFileSync(pemPath, 'utf8');
+            console.log(`✅ LivePerson encryption certificate loaded: ${certName} (PEM format)`);
+            console.log('🔍 PEM certificate size:', cert.length, 'characters');
             return cert;
         } else {
-            console.log('⚠ LivePerson certificate not found at:', certPath);
+            console.log(`⚠ LivePerson certificate not found: ${certName} at`, format === 'der' ? `${derPath} or ${pemPath}` : pemPath);
             return null;
         }
     } catch (error) {
@@ -175,7 +236,48 @@ function encryptSAMLAssertion(xml, encryptionCert) {
     }
 }
 
+/**
+ * Download and convert LivePerson certificate from URL to DER format
+ * @param {string} certUrl - URL to download certificate from (e.g., https://auth-z1-a.liveperson.net/pem?cert=connection)
+ * @returns {Promise<Buffer|null>} Certificate in DER format as Buffer
+ */
+async function downloadAndConvertCertificate(certUrl) {
+    try {
+        console.log('📥 Downloading certificate from:', certUrl);
+        
+        // Import fetch dynamically for Node.js
+        const { default: fetch } = await import('node-fetch');
+        
+        const response = await fetch(certUrl);
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const pemCert = await response.text();
+        console.log('✅ Certificate downloaded successfully');
+        console.log('🔍 Downloaded certificate size:', pemCert.length, 'characters');
+        console.log('🔍 Certificate starts with:', pemCert.substring(0, 50));
+        
+        // Convert to DER
+        const derCert = convertPemToDer(pemCert);
+        
+        if (derCert) {
+            console.log('✅ Certificate converted to DER format');
+            return derCert;
+        } else {
+            console.log('❌ Failed to convert certificate to DER, returning PEM');
+            return pemCert;
+        }
+        
+    } catch (error) {
+        console.error('❌ Failed to download/convert certificate:', error.message);
+        return null;
+    }
+}
+
 export {
     loadLivePersonCertificate,
-    encryptSAMLAssertion
+    encryptSAMLAssertion,
+    convertPemToDer,
+    downloadAndConvertCertificate
 }; 
