@@ -10,7 +10,8 @@ export function generateDashboardHTML(options = {}) {
         encryptionEnabled = false,
         flowType = 'implicit',
         lpEncryptionPublicKey = null,
-        requestLogs = []
+        requestLogs = [],
+        selectedEncryptionCert = 'lpsso2026'
     } = options;
 
     return `
@@ -69,6 +70,16 @@ export function generateDashboardHTML(options = {}) {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ flowType: type })
+                }).then(() => {
+                    setTimeout(refreshLogs, 500);
+                });
+            }
+            
+            function selectEncryptionCert(certName) {
+                fetch('/select-encryption-cert', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ certName: certName })
                 }).then(() => {
                     setTimeout(refreshLogs, 500);
                 });
@@ -219,6 +230,21 @@ export function generateDashboardHTML(options = {}) {
                 <strong>Current Flow:</strong> <span style="color: #007bff; font-weight: bold;">${flowType.toUpperCase()}</span><br>
                 <strong>Issuer (iss):</strong> <code style="font-size: 11px;">https://mature-mackerel-golden.ngrok-free.app/${flowType}</code><br>
                 <strong>LivePerson Config:</strong> Use different issuer URLs to test multiple IdP configurations
+            </div>
+            
+            <h3 style="margin-top: 25px;">🔐 Encryption Certificate Selection</h3>
+            <div style="margin: 15px 0;">
+                <label style="margin-right: 20px;">
+                    <input type="radio" name="encryptionCert" value="lpsso2026" ${selectedEncryptionCert === 'lpsso2026' ? 'checked' : ''} onchange="selectEncryptionCert('lpsso2026')">
+                    <strong>lpsso2026</strong> (Production)
+                </label>
+                <label>
+                    <input type="radio" name="encryptionCert" value="lpsso2026dev" ${selectedEncryptionCert === 'lpsso2026dev' ? 'checked' : ''} onchange="selectEncryptionCert('lpsso2026dev')">
+                    <strong>lpsso2026dev</strong> (Development)
+                </label>
+            </div>
+            <div style="background: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; border-radius: 4px; font-size: 12px;">
+                <strong>Note:</strong> Changes certificate used for JWE encryption in consumer authentication. Kid in JWE header will match selected certificate name.
             </div>
         </div>
         
@@ -397,6 +423,7 @@ export function generateTestPageHTML(options = {}) {
             lpTag.tagletSection = lpTag.tagletSection || null;
             lpTag.autoStart = lpTag.autoStart !== false;
             lpTag.ovr = lpTag.ovr || {
+                protocol: 'https:',
                 domain: 'lptag-a.liveperson.net',
                 tagjs: 'tags-a.liveperson.net'
             };
@@ -445,48 +472,24 @@ export function generateTestPageHTML(options = {}) {
             // LivePerson identity configuration
             lpTag.identities = [];
             lpTag.identities.push(function(callback) {
-                // Determine issuer based on current flow type
-                fetch('/api/account/current')
-                    .then(response => response.json())
-                    .then(account => {
-                        console.log('Using account:', account);
-                        
-                        // Get the flow type for issuer determination
-                        fetch('/toggle-flow-type', { method: 'GET' })
-                            .then(() => {
-                                // Note: This is for demo purposes. In real implementation,
-                                // the issuer would be determined by your OAuth flow configuration
-                                const issuer = '${config.jwt.issuerBase}/${flowType}';
-                                
-                                console.log('Calling LivePerson callback with issuer:', issuer);
-                                
-                                callback({
-                                    "iss": issuer,
-                                    "acr": "loa1"
-                                });
-                            });
-                    })
-                    .catch(error => {
-                        console.error('Error getting account info:', error);
-                        // Fallback to default issuer
-                        callback({
-                            "iss": "${config.jwt.issuerBase}/${flowType}",
-                            "acr": "loa1"
-                        });
-                    });
+                // Determine issuer based on current flow type (no extra network calls)
+                const issuer = '${config.jwt.issuerBase}/${flowType}';
+                console.log('Calling LivePerson callback with issuer:', issuer);
+                callback({
+                    "sub": "${config.livePerson.testUser.id}",
+                    "iss": issuer,
+                    "acr": "loa1"
+                });
             });
             
             // Token retrieval function for LivePerson
             function lpgetToken(callback) {
                 console.log('lpgetToken called by LivePerson');
                 
-                // Get current flow type from server
-                fetch('/toggle-flow-type', { method: 'GET' })
-                    .then(() => {
-                        // For demo, we'll use the current configured flow type
-                        const flowType = '${flowType}';
-                        
-                        if (flowType === 'codepkce') {
+                // Use the current configured flow type directly
+                const flowType = '${flowType}';
+                
+                if (flowType === 'codepkce') {
                             // PKCE Flow
                             console.log('Using Code+PKCE Flow...');
                             
@@ -515,9 +518,9 @@ export function generateTestPageHTML(options = {}) {
                                 })
                                 .then(response => response.json())
                                 .then(data => {
-                                    if (data.ssoKey) {
+                                if (data.code) {
                                         console.log('OK PKCE authorization code received');
-                                        callback(data.ssoKey);
+                                    callback(data.code);
                                     } else {
                                         console.error('WARN No authorization code in PKCE response');
                                         callback(null);
@@ -527,7 +530,7 @@ export function generateTestPageHTML(options = {}) {
                                     console.error('WARN Error in Code+PKCE Flow:', error);
                                     callback(null);
                                 });
-                        } else if (flowType === 'code') {
+                } else if (flowType === 'code') {
                             // Authorization Code Flow
                             console.log('Using Authorization Code Flow...');
                             
@@ -544,9 +547,9 @@ export function generateTestPageHTML(options = {}) {
                             })
                             .then(response => response.json())
                             .then(data => {
-                                if (data.ssoKey) {
+                                if (data.code) {
                                     console.log('OK Authorization code received');
-                                    callback(data.ssoKey);
+                                    callback(data.code);
                                 } else {
                                     console.error('WARN No authorization code in response');
                                     callback(null);
@@ -556,7 +559,7 @@ export function generateTestPageHTML(options = {}) {
                                 console.error('WARN Error in Authorization Code Flow:', error);
                                 callback(null);
                             });
-                        } else {
+                } else {
                             // Implicit Flow (default)
                             console.log('Using Implicit Flow...');
                             
@@ -587,12 +590,7 @@ export function generateTestPageHTML(options = {}) {
                                 console.error('WARN Error in Implicit Flow:', error);
                                 callback(null);
                             });
-                        }
-                    })
-                    .catch(error => {
-                        console.error('WARN Error getting flow type:', error);
-                        callback(null);
-                    });
+                }
             }
             
             // Test function to manually trigger token retrieval
@@ -760,19 +758,9 @@ export function generateTestPageHTML(options = {}) {
             </div>
         </div>
         
-        <!-- BEGIN LivePerson Monitor Script -->
-        <script type="text/javascript">
-        // Only load LivePerson script after our configuration is ready
-        if (typeof lpTag !== 'undefined' && lpTag.site) {
-            (function() {
-                var script = document.createElement('script');
-                script.src = 'https://lptag-a.liveperson.net/tag/tag.js?site=' + lpTag.site;
-                script.charset = 'UTF-8';
-                document.getElementsByTagName('head')[0].appendChild(script);
-            })();
-        }
-        </script>
-        <!-- END LivePerson Monitor Script -->
+        <!-- BEGIN LivePerson Monitor. -->
+        <script type="text/javascript">window.lpTag=window.lpTag||{},'undefined'==typeof window.lpTag._tagCount?(window.lpTag={wl:lpTag.wl||null,scp:lpTag.scp||null,site:(lpTag.site||'${runtimeConfig.currentAccount.siteId}')||'',section:lpTag.section||'',tagletSection:lpTag.tagletSection||null,autoStart:lpTag.autoStart!==!1,ovr:lpTag.ovr||{domain: 'lptag-a.liveperson.net', tagjs: 'tags-a.liveperson.net'},_v:'1.10.0',_tagCount:1,protocol:'https:',events:{bind:function(t,e,i){lpTag.defer(function(){lpTag.events.bind(t,e,i)},0)},trigger:function(t,e,i){lpTag.defer(function(){lpTag.events.trigger(t,e,i)},1)}},defer:function(t,e){0===e?(this._defB=this._defB||[],this._defB.push(t)):1===e?(this._defT=this._defT||[],this._defT.push(t)):(this._defL=this._defL||[],this._defL.push(t))},load:function(t,e,i){var n=this;setTimeout(function(){n._load(t,e,i)},0)},_load:function(t,e,i){var n=t;t||(n=this.protocol+'//'+(this.ovr&&this.ovr.domain?this.ovr.domain:'lptag.liveperson.net')+'/tag/tag.js?site='+this.site);var o=document.createElement('script');o.setAttribute('charset',e?e:'UTF-8'),i&&o.setAttribute('id',i),o.setAttribute('src',n),document.getElementsByTagName('head').item(0).appendChild(o)},init:function(){this._timing=this._timing||{},this._timing.start=(new Date).getTime();var t=this;window.attachEvent?window.attachEvent('onload',function(){t._domReady('domReady')}):(window.addEventListener('DOMContentLoaded',function(){t._domReady('contReady')},!1),window.addEventListener('load',function(){t._domReady('domReady')},!1)),'undefined'===typeof window._lptStop&&this.load()},start:function(){this.autoStart=!0},_domReady:function(t){this.isDom||(this.isDom=!0,this.events.trigger('LPT','DOM_READY',{t:t})),this._timing[t]=(new Date).getTime()},vars:lpTag.vars||[],dbs:lpTag.dbs||[],ctn:lpTag.ctn||[],sdes:lpTag.sdes||[],hooks:lpTag.hooks||[],identities:lpTag.identities||[],ev:lpTag.ev||[]},lpTag.init()):window.lpTag._tagCount+=1;</script>
+        <!-- END LivePerson Monitor. -->
     </body>
     </html>
     `;

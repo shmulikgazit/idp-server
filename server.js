@@ -63,6 +63,9 @@ const PORT = config.server.port;
 // Encryption toggle state
 let encryptionEnabled = false;
 
+// Selected encryption certificate
+let selectedEncryptionCert = 'lpsso2026';
+
 // OAuth flow type state
 let flowType = config.oauth.defaultFlowType;
 
@@ -88,7 +91,8 @@ setupExpressMiddleware(app);
 function getServerState() {
     return {
         encryptionEnabled,
-        flowType
+        flowType,
+        selectedEncryptionCert
     };
 }
 
@@ -99,6 +103,17 @@ app.use(createRequestLoggingMiddleware(getServerState));
 // KEY MANAGEMENT
 // ============================================================================
 
+function loadSelectedEncryptionCert() {
+    try {
+        const certPath = path.join(__dirname, 'certs', `${selectedEncryptionCert}.pem`);
+        lpEncryptionPublicKey = fs.readFileSync(certPath, 'utf8');
+        console.log(`[OK] LivePerson encryption certificate (${selectedEncryptionCert}.pem) loaded`);
+    } catch (error) {
+        console.log(`[WARN] LivePerson encryption certificate (${selectedEncryptionCert}.pem) not found - place it in ./certs/ for JWE encryption`);
+        lpEncryptionPublicKey = null;
+    }
+}
+
 function loadKeys() {
     try {
         // Load required signing keys
@@ -107,13 +122,7 @@ function loadKeys() {
         console.log('[OK] Signing keys loaded successfully');
         
         // Try to load LivePerson encryption certificate
-        try {
-            lpEncryptionPublicKey = fs.readFileSync(path.join(__dirname, 'certs', 'lpsso2026.pem'), 'utf8');
-            console.log('[OK] LivePerson encryption certificate (lpsso2026.pem) loaded');
-        } catch (error) {
-            console.log('[WARN] LivePerson encryption certificate (lpsso2026.pem) not found - place it in ./certs/ for JWE encryption');
-            lpEncryptionPublicKey = null;
-        }
+        loadSelectedEncryptionCert();
         
         // Initialize SAML after keys are loaded
         const samlInitialized = initializeSAML();
@@ -141,6 +150,7 @@ function updateAppLocals() {
     app.locals.flowType = flowType;
     app.locals.signingPrivateKey = signingPrivateKey;
     app.locals.lpEncryptionPublicKey = lpEncryptionPublicKey;
+    app.locals.selectedEncryptionCert = selectedEncryptionCert;
     app.locals.requestLogs = requestLogs;
 }
 
@@ -165,7 +175,8 @@ app.get('/', (req, res) => {
         encryptionEnabled: encryptionEnabled,
         flowType: flowType,
         lpEncryptionPublicKey: lpEncryptionPublicKey,
-        requestLogs: requestLogs
+        requestLogs: requestLogs,
+        selectedEncryptionCert: selectedEncryptionCert
     });
     res.send(html);
 });
@@ -219,6 +230,27 @@ app.post('/toggle-flow-type', (req, res) => {
         res.status(400).json({ 
             error: 'invalid_flow_type', 
             error_description: 'Supported flow types: implicit, code, codepkce' 
+        });
+    }
+});
+
+// Select encryption certificate endpoint
+app.post('/select-encryption-cert', (req, res) => {
+    const { certName } = req.body;
+    if (certName && certName.match(/^lpsso\d{4}(dev)?$/)) {
+        selectedEncryptionCert = certName;
+        loadSelectedEncryptionCert(); // Reload certificate
+        updateAppLocals();
+        console.log(`Encryption certificate changed to: ${selectedEncryptionCert}`);
+        res.json({ 
+            success: true, 
+            selectedEncryptionCert: selectedEncryptionCert,
+            certAvailable: !!lpEncryptionPublicKey
+        });
+    } else {
+        res.status(400).json({ 
+            error: 'invalid_cert_name', 
+            error_description: 'Certificate name must match pattern lpssoYYYY or lpssoYYYYdev' 
         });
     }
 });

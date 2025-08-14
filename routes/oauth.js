@@ -111,7 +111,7 @@ router.get('/authorize', async (req, res) => {
     } = req.query;
     
     // Get current state from main app
-    const { encryptionEnabled, flowType, signingPrivateKey, lpEncryptionPublicKey } = req.app.locals;
+    const { encryptionEnabled, flowType, signingPrivateKey, lpEncryptionPublicKey, selectedEncryptionCert } = req.app.locals;
     
     console.log('Authorization request received:', req.query);
     console.log(`Encryption mode: ${encryptionEnabled ? 'ENABLED' : 'DISABLED'}`);
@@ -171,35 +171,63 @@ router.get('/authorize', async (req, res) => {
         // Create user payload
         const now = Math.floor(Date.now() / 1000);
         
-        // For OIDC integrations, use the base URL as issuer (without flow suffix)
-        // This matches what LivePerson expects in the discovery document
-        const forwardedHost = req.get('x-forwarded-host') || req.get('host');
-        const forwardedProto = req.get('x-forwarded-proto') || req.get('x-forwarded-protocol');
+        // Determine which client/flow is being used
+        const isAgentClient = (client_id && client_id === config.oauth.clientId);
         
-        // Use forwarded protocol if available, otherwise force HTTPS for ngrok
-        const protocol = forwardedProto || (forwardedHost && forwardedHost.includes('ngrok') ? 'https' : req.protocol);
-        const host = forwardedHost || req.get('host');
+        // For agent OIDC/SAML flows, keep base issuer (no suffix) and loginName
+        // For consumer flows (lpgetToken implicit/code), issuer must include /implicit or /code
+        let issuer;
+        if (isAgentClient) {
+            const forwardedHost = req.get('x-forwarded-host') || req.get('host');
+            const forwardedProto = req.get('x-forwarded-proto') || req.get('x-forwarded-protocol');
+            const protocol = forwardedProto || (forwardedHost && forwardedHost.includes('ngrok') ? 'https' : req.protocol);
+            const host = forwardedHost || req.get('host');
+            issuer = `${protocol}://${host}`;
+            console.log('🔍 Agent issuer (base, no suffix):', issuer);
+        } else {
+            const suffix = response_type === 'id_token' ? 'implicit' : 'code';
+            issuer = `${config.jwt.issuerBase}/${suffix}`;
+            console.log('🔍 Consumer issuer (with suffix):', issuer);
+        }
         
-        const issuer = `${protocol}://${host}`;
-        
-        console.log('🔍 Issuer Construction:');
-        console.log(`   - Original protocol: ${req.protocol}`);
-        console.log(`   - Forwarded protocol: ${forwardedProto || 'None'}`);
-        console.log(`   - Final protocol: ${protocol}`);
-        console.log(`   - Host: ${host}`);
-        console.log(`   - Final issuer: ${issuer}`);
-        
-        const payload = {
-            // Core OIDC claims
-            sub: 'admin',  // Agent username
-            aud: client_id || config.oauth.clientId,
-            exp: now + 3600,
-            iat: now,
-            nonce: nonce,
-            
-            // LivePerson Agent SSO specific claim
-            loginName: 'admin'  // Required for agent authentication
-        };
+        // Build payload according to client type
+        let payload;
+        if (isAgentClient) {
+            payload = {
+                // Agent SSO style
+                sub: 'admin',
+                aud: client_id || config.oauth.clientId,
+                nonce: nonce,
+                loginName: 'admin'
+            };
+        } else {
+            // Consumer auth payload (matches UI docs)
+            const userId = config.livePerson.testUser.id;
+            const userName = config.livePerson.testUser.name;
+            payload = {
+                sub: userId,
+                aud: client_id || 'liveperson-client',
+                nonce: nonce,
+                email: config.livePerson.testUser.email,
+                name: userName,
+                given_name: 'Test',
+                family_name: 'User',
+                phone_number: config.livePerson.testUser.phone,
+                lp_sdes: {
+                    customerInfo: {
+                        customerId: userId,
+                        customerType: 'premium',
+                        balance: 1500.00,
+                        accountNumber: `ACC-${userId.replace(/[^0-9]/g, '')}123`
+                    },
+                    personalInfo: {
+                        name: userName,
+                        email: config.livePerson.testUser.email,
+                        phone: config.livePerson.testUser.phone
+                    }
+                }
+            };
+        }
         
         console.log(`🔄 Using ${flowType.toUpperCase()} flow with issuer: ${issuer}`);
         console.log(`📤 Expected LivePerson behavior:`);
@@ -259,7 +287,7 @@ router.get('/authorize', async (req, res) => {
             
         } else if (response_type === 'id_token') {
             // Implicit Flow
-            const idToken = await createToken(payload, issuer, signingPrivateKey, lpEncryptionPublicKey, encryptionEnabled);
+            const idToken = await createToken(payload, issuer, signingPrivateKey, lpEncryptionPublicKey, encryptionEnabled, selectedEncryptionCert);
             
             if (isAjaxRequest) {
                 // Return token directly for AJAX requests (perfect for lpgetToken!)
@@ -341,7 +369,7 @@ router.post('/token', async (req, res) => {
     const { grant_type, code, client_id, client_secret, redirect_uri, code_verifier } = req.body;
     
     // Get current state from main app
-    const { encryptionEnabled, flowType, signingPrivateKey, lpEncryptionPublicKey } = req.app.locals;
+    const { encryptionEnabled, flowType, signingPrivateKey, lpEncryptionPublicKey, selectedEncryptionCert } = req.app.locals;
     
     console.log('\n🔥 === TOKEN ENDPOINT CALLED ===');
     console.log('📅 Timestamp:', new Date().toISOString());
@@ -475,7 +503,7 @@ router.post('/token', async (req, res) => {
         console.log(`🏷️  Using issuer from code: ${payload.iss}`);
         
         // Create tokens
-        const idToken = await createToken(payload, payload.iss, signingPrivateKey, lpEncryptionPublicKey, encryptionEnabled);
+        const idToken = await createToken(payload, payload.iss, signingPrivateKey, lpEncryptionPublicKey, encryptionEnabled, selectedEncryptionCert);
         const accessToken = await createAccessToken(payload, payload.iss, signingPrivateKey);
         
         const response = {
@@ -514,7 +542,7 @@ router.post('/token-direct', async (req, res) => {
     const { user_id, client_id } = req.body;
     
     // Get current state from main app
-    const { encryptionEnabled, flowType, signingPrivateKey, lpEncryptionPublicKey } = req.app.locals;
+    const { encryptionEnabled, flowType, signingPrivateKey, lpEncryptionPublicKey, selectedEncryptionCert } = req.app.locals;
     
     console.log('Direct token request received:', req.body);
     console.log(`Encryption mode: ${encryptionEnabled ? 'ENABLED' : 'DISABLED'}`);
@@ -563,7 +591,7 @@ router.post('/token-direct', async (req, res) => {
         console.log(`🔄 Using ${flowType.toUpperCase()} flow with issuer: ${issuer}`);
         
         // Create signed JWT or JWE based on encryption setting
-        const idToken = await createToken(payload, issuer, signingPrivateKey, lpEncryptionPublicKey, encryptionEnabled);
+        const idToken = await createToken(payload, issuer, signingPrivateKey, lpEncryptionPublicKey, encryptionEnabled, selectedEncryptionCert);
         const accessToken = await createAccessToken(payload, issuer, signingPrivateKey);
         
         const response = {

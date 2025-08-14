@@ -37,7 +37,7 @@ export function pemToJwk(pemKey, use, alg, kid) {
  * @param {boolean} encryptionEnabled - Whether to encrypt the token
  * @returns {Promise<string>} Signed and optionally encrypted token
  */
-export async function createToken(payload, issuer, signingPrivateKey, lpEncryptionPublicKey, encryptionEnabled) {
+export async function createToken(payload, issuer, signingPrivateKey, lpEncryptionPublicKey, encryptionEnabled, selectedEncryptionCert = 'lpsso2026') {
     try {
         console.log(`\n🔐 TOKEN CREATION MODE: ${encryptionEnabled ? 'SIGNING + ENCRYPTION (JWE)' : 'SIGNING ONLY (JWT)'}`);
         console.log(`📜 LivePerson cert available: ${!!lpEncryptionPublicKey}`);
@@ -85,7 +85,7 @@ export async function createToken(payload, issuer, signingPrivateKey, lpEncrypti
                 .setProtectedHeader({ 
                     alg: 'RSA-OAEP-256',  // Algorithm for key encryption
                     enc: 'A256GCM',       // Algorithm for content encryption
-                    kid: 'lpsso2026',     // Key ID for LivePerson certificate
+                    kid: selectedEncryptionCert,     // Key ID for LivePerson certificate
                     cty: 'JWT'            // Content type is JWT
                 })
                 .encrypt(publicKey);
